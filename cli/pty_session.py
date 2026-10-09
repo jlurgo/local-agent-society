@@ -11,9 +11,16 @@ by Enter — exactly what the TUI sees when a person pastes and submits.
 Stdlib only (pty/tty/termios/select), no native module, no AppleScript,
 works for any interactive program.
 
+A message never lands in the middle of what the human is typing: `las`
+watches the keystrokes it forwards (DraftTracker) and holds mailbox messages
+while the input line has a draft in it or a key was pressed in the last
+moment, typing them in once the human submits or clears the line (or after
+`max_hold` seconds of an abandoned draft, so nothing waits forever).
+
 Limits, stated plainly: this is one-way (what the TUI answers stays on
-screen; nothing is sent back to the sender), and a message that lands while
-the human is mid-sentence is appended to what they were typing. The
+screen; nothing is sent back to the sender), and the draft is estimated from
+keystrokes, not read from the TUI — an edit `las` can't size (Ctrl-W, a
+mouse selection) can leave it thinking a draft remains until `max_hold`. The
 two-way, thread-aware integration is Codex's experimental app-server
 (docs/adr/0004 phase 3); this is the terminal the user asked for today.
 """
@@ -56,7 +63,46 @@ def type_into(master_fd: int, text: str, enter_delay: float = 0.05) -> None:
     os.write(master_fd, b"\r")
 
 
-def run_in_pty(argv, *, inject_fd=None, stdin_fd=None, stdout_fd=None, on_inject=None, cwd=None, env=None) -> int:
+class DraftTracker:
+    """Estimates, from the raw keystrokes forwarded to the TUI, whether the
+    human has something half-typed on the input line."""
+
+    def __init__(self):
+        self.chars = 0
+        self.last_key = 0.0
+        self._esc = False      # inside an escape sequence (arrows, bracketed-paste markers)
+        self._csi = False
+
+    def feed(self, data: bytes, now: float) -> None:
+        self.last_key = now
+        for b in data:
+            if self._esc:
+                if self._csi:
+                    if 0x40 <= b <= 0x7E:  # final byte of a CSI sequence
+                        self._esc = self._csi = False
+                elif b == 0x5B:  # ESC [
+                    self._csi = True
+                else:
+                    self._esc = False
+                continue
+            if b == 0x1B:
+                self._esc = True
+            elif b in (0x0D, 0x0A, 0x03, 0x15):  # Enter submits; Ctrl-C / Ctrl-U clear
+                self.chars = 0
+            elif b in (0x7F, 0x08):  # backspace
+                self.chars = max(0, self.chars - 1)
+            elif b >= 0x20 and not (0x80 <= b <= 0xBF):  # printable; skip UTF-8 continuation bytes
+                self.chars += 1
+
+    def busy(self, now: float, quiet: float, max_hold: float) -> bool:
+        idle = now - self.last_key
+        if idle < quiet:
+            return True
+        return self.chars > 0 and idle < max_hold
+
+
+def run_in_pty(argv, *, inject_fd=None, stdin_fd=None, stdout_fd=None, on_inject=None, cwd=None, env=None,
+               quiet: float = 1.5, max_hold: float = 120.0) -> int:
     """Run `argv` in a PTY, forwarding stdin/stdout, typing each JSON line read
     from `inject_fd` (the bridge's stdout) into it. Returns the child's exit code.
 
@@ -79,11 +125,13 @@ def run_in_pty(argv, *, inject_fd=None, stdin_fd=None, stdout_fd=None, on_inject
         tty.setraw(stdin_fd)
 
     pending = b""
+    held = []  # messages waiting for the human to finish typing
+    draft = DraftTracker()
     fds = [master_fd, stdin_fd] + ([inject_fd] if inject_fd is not None else [])
     try:
         while True:
             try:
-                ready, _, _ = select.select(fds, [], [])
+                ready, _, _ = select.select(fds, [], [], 0.25 if held else None)
             except InterruptedError:
                 continue
             if master_fd in ready:
@@ -99,6 +147,7 @@ def run_in_pty(argv, *, inject_fd=None, stdin_fd=None, stdout_fd=None, on_inject
                 if not data:
                     fds.remove(stdin_fd)  # test pipes close; a real terminal never does
                 else:
+                    draft.feed(data, time.monotonic())
                     os.write(master_fd, data)
             if inject_fd is not None and inject_fd in ready:
                 chunk = os.read(inject_fd, 65536)
@@ -115,7 +164,9 @@ def run_in_pty(argv, *, inject_fd=None, stdin_fd=None, stdout_fd=None, on_inject
                         envelope = json.loads(line.decode("utf-8"))
                     except (ValueError, UnicodeDecodeError):
                         continue
-                    type_into(master_fd, on_inject(envelope))
+                    held.append(on_inject(envelope))
+            while held and not draft.busy(time.monotonic(), quiet, max_hold):
+                type_into(master_fd, held.pop(0))
     finally:
         if saved is not None:
             termios.tcsetattr(stdin_fd, termios.TCSADRAIN, saved)
