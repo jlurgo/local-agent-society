@@ -401,3 +401,31 @@ Every LAS agent has, besides its `name` (mandatory — it's the widget's sign), 
 - When helping document an agent's scope (a new one, or on explicit request), propose filling in at least `short_description`/`long_description`; if more detail is needed, add a `.vxia-scope.<N>.md` instead of continuing to inflate the JSON.
 - There isn't (yet) a numeric agent ID — the identity that matters for lookup/routing is this one, the symbolic one (name + scope ladder).
 - Automatic collision scanning and any vortexia routing on top of this ladder are future work (see `vortexia/docs/future-las-agent-scope-router.md` in the sibling `vortexia` repo) — today this is a convention applied by hand/judgment by whichever agent is in session, not something a script runs on its own.
+
+---
+
+## 10. Terminal tint — the terminal is a signpost too
+
+**Intent:** whenever it can, an agent's terminal shows that agent's widget color as its background, so a glance at any terminal says which agent's folder it is in — the same signpost job the widget does (§8). Adapt to whatever terminal you find; the mechanism below is just the first known case, not the definition.
+
+**What exists today** — `las shell-init` (zsh), proposed by System 2026-10-12:
+
+```bash
+las shell-init --install   # adds one `source .../shell/las-shell-init.zsh  # las shell-init` line to ~/.zshrc (idempotent)
+las shell-init             # prints the snippet instead
+```
+
+On every `cd` (and at shell start) the hook finds the nearest `.las-agent.json` upward — the same rule LAS uses everywhere — reads `.name`, takes `agents.<name>.color` from the widget prefs (`~/Library/Application Support/widget-electron/widget-electron-prefs.json` on macOS), mixes it `LAS_BG_MIX`% (default 15) over `LAS_BG_BASE` (default `101010`) so text stays readable, and sets it with **OSC 11** (`\e]11;#rrggbb\a`). Outside any agent folder it sends **OSC 111** to restore the terminal's own background. `LAS_TINT=0` turns it off; `LAS_TINT_FORCE=1` tries it in an unlisted terminal. The sourced file lives in this repo (`shell/las-shell-init.zsh`), so a `git pull` updates every shell — never hand-paste the hook into `~/.zshrc` again.
+
+**Known terminals** — the experience log. When you meet a terminal not here, work out how it sets a background color, adapt `shell/las-shell-init.zsh` (detection in `_las_tint_supported`, the escape in `_las_osc`), add a row, commit:
+
+| Terminal | Status | How |
+|---|---|---|
+| Ghostty | **verified** 2026-10-12 (System #192a1b, Teli #14252c, Pulpo #2c1422) | OSC 11 / OSC 111, `TERM_PROGRAM=ghostty` |
+| iTerm2, WezTerm, kitty | enabled, not yet verified here | same OSC 11/111; detected by `TERM_PROGRAM` / `TERM=xterm-kitty` |
+| tmux | enabled, not yet verified | wrapped as `\ePtmux;\e…\e\\`; needs `set -g allow-passthrough on` |
+| Terminal.app | off | no known OSC 11 support — a profile switch via AppleScript is the likely route |
+| Zellij | unknown | may swallow OSC 11 |
+| bash, fish | not covered | the snippet is zsh; a port needs `PROMPT_COMMAND` / `--on-variable PWD` |
+
+A terminal that ignores OSC 11 simply stays as it was — the hook is safe to leave on everywhere.

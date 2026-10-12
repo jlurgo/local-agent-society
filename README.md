@@ -70,6 +70,7 @@ las install                             # run install.sh (compile widget, launch
 las uninstall                           # run uninstall.sh (remove the system)
 las update                              # run update.sh (git pull + reinstall)
 las completion [--shell zsh|bash|fish] [--install]  # set up shell tab completion
+las shell-init [--install]    # zsh: tint the terminal background with the agent's widget color on every cd
 ```
 
 ### Agents
