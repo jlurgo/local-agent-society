@@ -109,7 +109,7 @@ const sid = newSessionId(runtime);
 const session = new SessionRegistry({ agent: agent.name, sid, runtime, cwd: process.cwd(), log });
 const sessionSource = new MailboxSource({ agent: agent.name, topic: sessionInboxTopic(agent.name, sid), clientId: sessionMailboxClientId(agent.name, sid), port: opts.port, log });
 const defaultWatcher = new DefaultWatcher({ agent: agent.name, port: opts.port, log });
-const status = new StatusFile({ agent: agent.name, sink: sink.name });
+const status = new StatusFile({ agent: agent.name, sink: sink.name, sid });
 const bridge = new Bridge({ agent: agent.name, source, pipeline: new Pipeline(interceptors), sink, send, status, log, session, sessionSource, defaultWatcher });
 
 let exiting = false;

@@ -88,8 +88,13 @@ UNKNOWN_RUNTIME = {"intelligent": True, "accepts": [KIND_MESSAGE, KIND_COMMAND],
 
 
 def descriptor_for(policy: dict, runtime: str) -> dict:
-    """{intelligent, accepts, scope} for one runtime kind out of an effective `sessions` policy — an unknown runtime is assumed intelligent, accepting everything."""
+    """{intelligent, accepts, scope} for one runtime kind out of an effective `sessions` policy — an unknown runtime is assumed intelligent, accepting everything.
+
+    A second Claude account (`las claude --account relay` -> runtime "claudeRelay")
+    is still Claude: it inherits the `claude` descriptor unless declared itself."""
     known = policy["runtimes"].get(runtime)
+    if not known and runtime.startswith("claude"):
+        known = policy["runtimes"].get("claude")
     return dict(known) if known else dict(UNKNOWN_RUNTIME)
 
 

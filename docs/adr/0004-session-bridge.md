@@ -90,9 +90,20 @@ MailboxSource ──▶ Pipeline [interceptor, interceptor, …] ──▶ Sink
     stdin and `LAS_*` env vars, replies with its stdout. This is the
     multi-AI adapter: `--exec 'codex exec --yolo -'`, an Ollama call, a script.
   - `StdoutSink` — one JSON line per message; what `listen` printed.
-- **Status file** `session/bridge-<agent>.json` (pid, sink, armed, counters)
-  so `las bridge status` and the skill can ask "is this mailbox being
-  delivered right now?" without opening a broker connection.
+- **Status file** `session/bridge-<agent>@<sid>.json` (pid, sink, runtime,
+  armed, counters) so `las bridge status` and the skill can ask "is this
+  mailbox being delivered right now?" without opening a broker connection.
+  One per session (it was one per agent until 2026-10-13): two Claude
+  sessions of the same agent clobbered each other's file, and whichever
+  exited first deleted the survivor's. `las bridge status` picks the one
+  belonging to the calling session by process ancestry.
+- **Second Claude account** (2026-10-13): Claude Code keeps one login per
+  `CLAUDE_CONFIG_DIR`. `las claudeRelay` = `las claude --account relay`
+  sets it to `~/.claude-relay` (symlinking the shared CLAUDE.md, settings,
+  skills, hooks from `~/.claude`), registers the channel in that dir's own
+  `.claude.json` with `--runtime claudeRelay`, and execs Claude. Any
+  `CLAUDE_CONFIG_DIR=~/.claude-NAME` maps to runtime `claudeName`; such a
+  runtime inherits the `claude` descriptor (cli/agent_config.py).
 - **CLI**: one command per runtime — `las claude [args]`, `las codex [args]`,
   `las shell` — each chaining MCP registration, presence and the widget
   before handing the terminal over (no alias, no separate steps), over the

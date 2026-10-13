@@ -22,6 +22,9 @@ def _never_touch_the_real_claude_config(monkeypatch, tmp_path):
     # The suite itself often runs from inside a Claude session (CLAUDECODE set):
     # that must not turn every `las claude` under test into the reconnect guide.
     monkeypatch.delenv("CLAUDECODE", raising=False)
+    # Nor may a run from inside the second account's session (claudeRelay) leak its config dir in.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("LAS_CLAUDE_RUNTIME", raising=False)
 
 
 def _capture(monkeypatch):

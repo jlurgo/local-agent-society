@@ -40,6 +40,18 @@ test('StatusFile writes session/bridge-<agent>.json, bumps counters, and is read
   assert.equal(readStatus('Robo', dir), null);
 });
 
+test('StatusFile with a sid writes bridge-<agent>@<sid>.json — two sessions of one agent never clobber each other', () => {
+  const dir = tmp();
+  const personal = new StatusFile({ agent: 'Robo', sink: 'claude-channel', sid: 'claude-1-aa', dir, pid: 1, now: () => 1 });
+  const relay = new StatusFile({ agent: 'Robo', sink: 'claude-channel', sid: 'claudeRelay-2-bb', dir, pid: 2, now: () => 1 });
+  personal.update({ armed: true });
+  relay.update({ armed: true });
+  assert.equal(statusPath('Robo', dir, 'claudeRelay-2-bb'), path.join(dir, 'bridge-Robo@claudeRelay-2-bb.json'));
+  relay.remove();
+  assert.equal(readStatus('Robo', dir, 'claudeRelay-2-bb'), null);
+  assert.equal(readStatus('Robo', dir, 'claude-1-aa').armed, true, 'the other session keeps its status');
+});
+
 test('Bridge: sink started and ARMED before the mailbox is attached; per message normalize -> pipeline -> sink -> status bump', async () => {
   const order = [];
   let armResolve;

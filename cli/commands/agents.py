@@ -267,7 +267,7 @@ def inject(name, message, from_agent):
 @click.option("--children", "to_children", is_flag=True,
               help="Deliver to every subordinate of --to (agents whose folder sits under its folder) instead of to --to itself")
 @click.option("--deep", is_flag=True, help="With --children: the whole subtree, not only direct subordinates")
-@click.option("--session", "session", default=None, help="Only one of the recipient's connected sessions: a session id, or a runtime (claude, codex, shell). Default: the last one used.")
+@click.option("--session", "session", default=None, help="Only one of the recipient's connected sessions: a session id, or a runtime (claude, claudeRelay, codex, shell). Default: the last one used.")
 @click.option("--all-sessions", is_flag=True, help="Every connected session of the recipient, one delivery each (like --children, but across its runtimes).")
 @click.option("--cc", is_flag=True, help="Also hand the recipient's last-used session a for-the-record copy (kind cc) when the message goes to another session — e.g. a command for its shell that its Claude should know about.")
 @click.option("--command", "as_command", is_flag=True, help="Mark the message as a command (kind command): a shell session runs it after y/N. A shell session is handed everything as a command anyway; use this to make an intelligent session run it too.")
@@ -375,7 +375,7 @@ def send(message, to, scope, from_agent, to_children, deep, session, all_session
 def _session_line(s: dict) -> str:
     title = f'"{s["title"]}"' if s.get("title") else "(no title yet)"
     flags = ("  *default" if s.get("default") else "") + ("" if s.get("intelligent", True) else "  [commands only]")
-    return f"{s['sid']:<28} {s.get('runtime', '?'):<7} {title}{flags}"
+    return f"{s['sid']:<28} {s.get('runtime', '?'):<11} {title}{flags}"
 
 
 @agent.command("children")
@@ -702,14 +702,14 @@ def sessions(name, use_sid, society, refresh, wait_s):
 def _print_sessions(name: str, view: dict) -> None:
     rows = view.get("sessions", [])
     if not rows:
-        click.echo(f"{name}: no connected sessions — open one with `las claude`, `las codex` or `las shell` in its folder.")
+        click.echo(f"{name}: no connected sessions — open one with `las claude` (`--account NAME` for a second login), `las codex` or `las shell` in its folder.")
         return
     for s in rows:
         mark = "*" if s.get("default") else " "
         age = int((time.time() * 1000 - s.get("lastActiveAt", 0)) / 1000)
         brain = "" if s.get("intelligent", True) else "  [not intelligent: commands only]"
         title = f"  \"{s['title']}\"" if s.get("title") else ""
-        click.echo(f"{mark} {s['sid']:<28} {s.get('runtime', '?'):<7} pid {s.get('pid', '?'):<7} used {age}s ago  {s.get('cwd', '')}{title}{brain}")
+        click.echo(f"{mark} {s['sid']:<28} {s.get('runtime', '?'):<11} pid {s.get('pid', '?'):<7} used {age}s ago  {s.get('cwd', '')}{title}{brain}")
 
 
 def _parent_pid(pid: int) -> int | None:

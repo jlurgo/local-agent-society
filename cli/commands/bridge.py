@@ -17,6 +17,13 @@ Claude's own config lives under its own scope: `las claude register|unregister`
 (Codex and the shell need no registration — their commands launch the bridge
 directly).
 
+Two Claude accounts on one Mac: Claude Code keeps a login per
+CLAUDE_CONFIG_DIR. `las claude --account relay` (or CLAUDE_CONFIG_DIR set by
+hand) opens Claude with ~/.claude-relay as its config dir, registers the
+channel in THAT dir's .claude.json, and the session shows up as runtime
+`claudeRelay` next to the personal `claude` one — its own sid, its own
+mailbox, its own status file, so neither steals the other's delivery.
+
 Sinks (the low-level `las bridge <sink>` form):
   claude   Claude Code channel — normally started by Claude Code itself from
            ~/.claude.json (see `las claude register`); run by hand only to debug
@@ -67,14 +74,70 @@ RECONNECT_GUIDE = (
 )
 
 
+def reconnect_guide() -> str:
+    """RECONNECT_GUIDE, naming the account when this shell belongs to a non-default Claude config dir."""
+    account = claude_account()
+    if not account:
+        return RECONNECT_GUIDE
+    command = "las claudeRelay" if account == RELAY_ACCOUNT else f"las claude --account {account}"
+    return RECONNECT_GUIDE.replace("las claude --resume", f"{command} --resume")
+
+
 def inside_claude_session() -> bool:
     """Claude Code sets CLAUDECODE in the shells it spawns (its `!` prompt, Bash tool)."""
     return bool(os.environ.get("CLAUDECODE"))
 
 
+DEFAULT_CLAUDE_RUNTIME = "claude"
+
+
+def claude_config_dir() -> Path | None:
+    """The Claude config dir in effect when it is NOT the default one (~/.claude) — None for the default."""
+    raw = os.environ.get("CLAUDE_CONFIG_DIR")
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    return None if path.resolve() == (Path.home() / ".claude").resolve() else path
+
+
+def account_config_dir(account: str) -> Path:
+    """`--account relay` -> ~/.claude-relay."""
+    return Path.home() / f".claude-{account}"
+
+
+def claude_account() -> str | None:
+    """The account name behind a non-default config dir: ~/.claude-relay -> "relay"; any other dir -> its name."""
+    path = claude_config_dir()
+    if path is None:
+        return None
+    stem = path.name.lstrip(".")
+    if stem.startswith("claude") and stem[6:7] in ("-", "_"):
+        stem = stem[7:]
+    return stem or None
+
+
+def claude_runtime() -> str:
+    """The runtime name this Claude session registers as: "claude" for the default
+    account, "claude" + CamelCased account otherwise (~/.claude-relay -> "claudeRelay").
+    LAS_CLAUDE_RUNTIME overrides both."""
+    explicit = os.environ.get("LAS_CLAUDE_RUNTIME")
+    if explicit:
+        return explicit
+    account = claude_account()
+    if not account:
+        return DEFAULT_CLAUDE_RUNTIME
+    return DEFAULT_CLAUDE_RUNTIME + "".join(part[:1].upper() + part[1:] for part in account.replace("_", "-").split("-") if part)
+
+
 def claude_config_path() -> Path:
-    """Claude Code's user-level config (mcpServers live here, not in settings.json)."""
-    return Path(os.environ.get("LAS_CLAUDE_CONFIG") or (Path.home() / ".claude.json"))
+    """Claude Code's user-level config (mcpServers live here, not in settings.json).
+
+    LAS_CLAUDE_CONFIG wins; otherwise Claude Code's own rule — the file lives
+    INSIDE CLAUDE_CONFIG_DIR when that is set, at ~/.claude.json when not."""
+    if os.environ.get("LAS_CLAUDE_CONFIG"):
+        return Path(os.environ["LAS_CLAUDE_CONFIG"])
+    config_dir = claude_config_dir()
+    return config_dir / ".claude.json" if config_dir else Path.home() / ".claude.json"
 
 
 def _node_candidates() -> list:
@@ -169,15 +232,17 @@ _port = click.option("--port", default=None, type=int, help="Broker MQTT port (d
 
 @bridge.command("claude")
 @_name_arg
+@click.option("--runtime", default=None, help="Runtime name this session registers as (default: from CLAUDE_CONFIG_DIR — claude, claudeRelay...).")
 @_intercept
 @_port
-def bridge_claude(name, intercept_url, port):
+def bridge_claude(name, runtime, intercept_url, port):
     """Run the Claude Code channel server (Claude Code starts this itself from ~/.claude.json).
 
     Outside an agent folder it still starts — as an idle, empty server — so a
     Claude session in any other project never shows a failed MCP server."""
     name = name or _agent_name_from_cwd()
-    extra = _common([], intercept_url, port)
+    runtime = runtime or claude_runtime()
+    extra = _common(["--runtime", runtime] if runtime != DEFAULT_CLAUDE_RUNTIME else [], intercept_url, port)
     argv = bridge_argv("claude", name, extra) if name else [_node(), str(BRIDGE_BIN), "claude", *extra]
     _exec(argv)
 
@@ -224,12 +289,31 @@ def _pid_alive(pid) -> bool:
         return False
 
 
-def read_status(name: str) -> dict | None:
-    path = SESSION_DIR / f"bridge-{name}.json"
+def _read_json(path: Path) -> dict | None:
     try:
         return json.loads(path.read_text())
     except (OSError, ValueError):
         return None
+
+
+def read_statuses(name: str) -> list:
+    """Every live bridge's status file for `name` — one per session (`bridge-<name>@<sid>.json`),
+    plus the per-agent file older bridges wrote. Dead pids are skipped."""
+    paths = sorted(SESSION_DIR.glob(f"bridge-{name}@*.json")) + [SESSION_DIR / f"bridge-{name}.json"]
+    return [s for s in (_read_json(p) for p in paths) if s and _pid_alive(s.get("pid"))]
+
+
+def read_status(name: str) -> dict | None:
+    """THIS session's bridge (found by process ancestry, like `las agent title`) when there is
+    one; otherwise the only live bridge, or an armed one, so a plain terminal still gets an answer."""
+    from cli.commands.agents import _ancestor_pids, own_session
+    statuses = read_statuses(name)
+    if not statuses:
+        return None
+    mine = own_session(statuses, _ancestor_pids()) if len(statuses) > 1 else statuses[0]
+    if mine:
+        return mine
+    return next((s for s in statuses if s.get("armed")), statuses[0])
 
 
 @bridge.command("status")
@@ -238,15 +322,16 @@ def bridge_status(name):
     """Is a bridge delivering this agent's mailbox right now? Exit 0 only when one is running AND armed."""
     name = resolve_agent_name(name)
     status = read_status(name)
-    if not status or not _pid_alive(status.get("pid")):
+    if not status:
         click.echo(f"{name}: no bridge running — messages wait in the mailbox.")
-        click.echo(RECONNECT_GUIDE)
+        click.echo(reconnect_guide())
         raise SystemExit(1)
     armed = bool(status.get("armed"))
     sink = status.get("sink", "?")
     delivered = status.get("delivered", 0)
     state = "armed" if armed else "waiting for the session to ack the channel probe"
-    click.echo(f"{name}: {sink} bridge pid {status.get('pid')} — {state}, {delivered} delivered.")
+    runtime = f" ({status['runtime']})" if status.get("runtime") else ""
+    click.echo(f"{name}: {sink} bridge pid {status.get('pid')}{runtime} — {state}, {delivered} delivered.")
     raise SystemExit(0 if armed else 1)
 
 
@@ -261,14 +346,24 @@ def _las() -> str:
 
 
 def mcp_server_entry() -> dict:
-    return {"command": _las(), "args": ["bridge", "claude"]}
+    """The `las` entry for the config in effect. A non-default account's entry names
+    its runtime explicitly, so the channel registers as claudeRelay even if Claude
+    Code ever stops handing CLAUDE_CONFIG_DIR down to the servers it spawns."""
+    runtime = claude_runtime()
+    args = ["bridge", "claude"] + (["--runtime", runtime] if runtime != DEFAULT_CLAUDE_RUNTIME else [])
+    return {"command": _las(), "args": args}
 
 
 def _entry_is_usable(entry) -> bool:
-    """An entry we (or an older version of us) wrote, whose command still exists."""
+    """An entry we (or an older version of us) wrote, for THIS config's runtime, whose command still exists."""
     if not isinstance(entry, dict) or not isinstance(entry.get("args"), list):
         return False
-    ours = entry["args"] == ["bridge", "claude"] or (entry["args"][:1] == [str(BRIDGE_BIN)] and entry["args"][-1:] == ["claude"])
+    args = entry["args"]
+    runtime = claude_runtime()
+    if runtime != DEFAULT_CLAUDE_RUNTIME:
+        ours = args == mcp_server_entry()["args"]
+    else:
+        ours = args == ["bridge", "claude"] or (args[:1] == [str(BRIDGE_BIN)] and args[-1:] == ["claude"])
     return ours and os.access(str(entry.get("command", "")), os.X_OK)
 
 
@@ -323,12 +418,44 @@ def _chain(name: str | None, *, widget: bool = True) -> None:
         _reopen_widget(name)
 
 
-def _launch_claude(args, no_widget=False):
+# What a second account shares with the personal one: the same instructions,
+# settings, skills and hooks — symlinked, so editing ~/.claude updates both.
+# The login (Keychain entry) and .claude.json stay per account.
+SHARED_CLAUDE_ENTRIES = ("CLAUDE.md", "settings.json", "skills", "hooks", "statusline-command.sh")
+
+
+def ensure_account_dir(config_dir: Path, home_claude: Path | None = None) -> list:
+    """Create `config_dir` and symlink each shared entry from ~/.claude that it lacks.
+    Never replaces anything already there. Returns the names it linked."""
+    home_claude = home_claude or Path.home() / ".claude"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    linked = []
+    for entry in SHARED_CLAUDE_ENTRIES:
+        source, target = home_claude / entry, config_dir / entry
+        if source.exists() and not target.exists() and not target.is_symlink():
+            target.symlink_to(source)
+            linked.append(entry)
+    return linked
+
+
+def _use_account(account: str | None) -> None:
+    """`--account relay`: Claude Code (exec'd below, inheriting this env) logs in and keeps its
+    config under ~/.claude-relay; registration and the runtime name follow from it."""
+    if account:
+        config_dir = account_config_dir(account)
+        ensure_account_dir(config_dir)
+        os.environ["CLAUDE_CONFIG_DIR"] = str(config_dir)
+        # A stale override for another account must not redirect the registration.
+        os.environ.pop("LAS_CLAUDE_CONFIG", None)
+
+
+def _launch_claude(args, no_widget=False, account=None):
     if inside_claude_session():
         # Not a launch: nested Claude with no TTY would just error. Guide instead.
         click.echo("You are already inside a Claude session — `las claude` opens a NEW one from a terminal.")
-        click.echo(RECONNECT_GUIDE)
+        click.echo(reconnect_guide())
         raise SystemExit(0)
+    _use_account(account)
     if not shutil.which("claude"):
         click.echo("Error: claude not found on PATH.", err=True)
         raise SystemExit(1)
@@ -352,7 +479,8 @@ class ClaudeGroup(click.Group):
         @click.pass_context
         def passthrough(pctx, rest):
             parent = pctx.parent
-            _launch_claude([*parent.args, name, *rest], (parent.obj or {}).get("no_widget", False))
+            obj = parent.obj or {}
+            _launch_claude([*parent.args, name, *rest], obj.get("no_widget", False), obj.get("account"))
 
         return passthrough
 
@@ -362,15 +490,20 @@ class ClaudeGroup(click.Group):
 
 @click.group("claude", cls=ClaudeGroup, invoke_without_command=True, context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
 @click.option("--no-widget", is_flag=True, help="Don't bring this agent's widget to the current Space.")
+@click.option("--account", default=None, metavar="NAME", help="Another Claude login on this Mac: config in ~/.claude-NAME, session shown as runtime claudeNAME (e.g. --account relay -> claudeRelay).")
 @click.pass_context
-def claude_cmd(ctx, no_widget):
+def claude_cmd(ctx, no_widget, account):
     """Claude Code, connected to LAS: `las claude [claude args]` starts it here with the channel on, presence published and the widget on this Space.
 
     Everything after `las claude` that isn't one of the subcommands below goes to Claude Code as-is (`--resume`, a prompt, `mcp list`...).
+    `--account relay` (or CLAUDE_CONFIG_DIR=~/.claude-relay) opens a second Claude account alongside the personal one.
     """
-    ctx.obj = {"no_widget": no_widget}
+    ctx.obj = {"no_widget": no_widget, "account": account}
     if ctx.invoked_subcommand is None:
-        _launch_claude(list(ctx.args), no_widget)
+        _launch_claude(list(ctx.args), no_widget, account)
+    else:
+        # `las claude --account relay register` repairs THAT account's config.
+        _use_account(account)
 
 
 @claude_cmd.command("register")
@@ -408,6 +541,22 @@ def claude_unregister():
     removed = servers.pop(MCP_SERVER_NAME, None) is not None
     path.write_text(json.dumps(config, indent=2) + "\n")
     click.echo(f"{path}: `{MCP_SERVER_NAME}` MCP server {'removed' if removed else 'was not registered'}.")
+
+
+RELAY_ACCOUNT = "relay"
+
+
+@click.command("claudeRelay", context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []})
+@click.option("--no-widget", is_flag=True, help="Don't bring this agent's widget to the current Space.")
+@click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
+def claude_relay_cmd(no_widget, claude_args):
+    """Claude Code on the second (company) account, connected to LAS — `las claude --account relay`.
+
+    Config in ~/.claude-relay (created on first use, sharing CLAUDE.md/settings/skills/hooks with
+    ~/.claude by symlink), session shown as runtime claudeRelay. First run: /login with that account.
+    Every argument goes to Claude Code as-is (`--resume`, a prompt...).
+    """
+    _launch_claude(list(claude_args), no_widget, RELAY_ACCOUNT)
 
 
 # `codex --yolo` — the exact command the user runs by hand — opened inside a
