@@ -160,3 +160,84 @@ def test_the_relay_guide_names_its_own_reconnect_command(monkeypatch, tmp_path):
 def test_a_second_claude_account_is_described_as_claude():
     assert runtime_descriptor({}, "claudeRelay") == runtime_descriptor({}, "claude")
     assert runtime_descriptor({}, "claudeRelay")["intelligent"] is True
+
+
+# ── an org that blocks channels: type into the prompt instead ────────────────
+
+def _blocked_log(tmp_path, session_id, project="-Users-me-Development-Robo"):
+    logs = tmp_path / "Library/Caches/claude-cli-nodejs" / project / "mcp-logs-las"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "2026-10-13T19-43-14-576Z.jsonl").write_text("\n".join([
+        json.dumps({"debug": "Successfully connected (transport: stdio) in 594ms", "sessionId": session_id}),
+        json.dumps({"debug": "Channel notifications skipped: channels not enabled by org policy (set channelsEnabled: true in managed settings)", "sessionId": session_id}),
+    ]) + "\n")
+
+
+def _relay_session(tmp_path, session_id):
+    projects = tmp_path / ".claude-relay/projects/-Users-me-Development-Robo"
+    projects.mkdir(parents=True, exist_ok=True)
+    (projects / f"{session_id}.jsonl").write_text("{}\n")
+    return tmp_path / ".claude-relay"
+
+
+def test_channels_blocked_reads_claude_codes_own_verdict_for_this_accounts_sessions(tmp_path):
+    relay = _relay_session(tmp_path, "relay-session")
+    assert bridge_mod.channels_blocked(relay) is False, "no log yet: assume channels work"
+    _blocked_log(tmp_path, "someone-elses-session")
+    assert bridge_mod.channels_blocked(relay) is False, "another account's verdict is not this one's"
+    _blocked_log(tmp_path, "relay-session", project="-Users-me-Development-Other")
+    assert bridge_mod.channels_blocked(relay) is True
+    assert bridge_mod.channels_blocked(None) is False, "the personal account is never second-guessed"
+
+
+def _pty_spies(monkeypatch):
+    calls, ptys = _launch_spies(monkeypatch)[0], []
+    monkeypatch.setattr(bridge_mod, "_run_in_pty_with_bridge",
+                        lambda name, argv, runtime, cwd, *a: (ptys.append((name, argv, runtime, os.environ.get("CLAUDE_CONFIG_DIR"))), 0)[1])
+    return calls, ptys
+
+
+def test_claude_relay_falls_back_to_the_pty_when_its_org_blocks_channels(monkeypatch, tmp_path):
+    _relay_session(tmp_path, "relay-session")
+    _blocked_log(tmp_path, "relay-session")
+    calls, ptys = _pty_spies(monkeypatch)
+    try:
+        result = CliRunner().invoke(cli, ["claudeRelay", "--resume"])
+        assert result.exit_code == 0, result.output
+        assert calls == [], "no channel launch"
+        assert ptys == [("Robo", ["claude", "--resume"], "claudeRelay", str(tmp_path / ".claude-relay"))], \
+            "claude in a PTY, without the channel flag, fed by a claudeRelay session bridge"
+        assert "blocks Claude Code channels" in result.output
+
+        ptys.clear()
+        CliRunner().invoke(cli, ["claudeRelay", "--channel"])
+        assert ptys == [] and calls[-1][0][1] == bridge_mod.CLAUDE_CHANNEL_FLAG, "--channel forces a retry of the channel"
+    finally:
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+
+
+def test_pty_can_be_asked_for_explicitly_on_any_account(monkeypatch, tmp_path):
+    calls, ptys = _pty_spies(monkeypatch)
+    result = CliRunner().invoke(cli, ["claude", "--pty", "--resume"])
+    assert result.exit_code == 0, result.output
+    assert ptys == [("Robo", ["claude", "--resume"], "claude", None)] and calls == []
+
+
+def test_run_in_pty_with_bridge_wires_a_session_bridge_of_that_runtime(monkeypatch):
+    popens, ptys = [], []
+
+    class FakeProc:
+        def __init__(self, argv, **kw):
+            popens.append(argv)
+            r, _w = os.pipe()
+            self.stdout = os.fdopen(r, "rb")
+        def terminate(self): pass
+        def wait(self, timeout=None): return 0
+
+    monkeypatch.setattr(bridge_mod.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(bridge_mod, "_node", lambda: "/usr/local/bin/node")
+    from cli import pty_session
+    monkeypatch.setattr(pty_session, "run_in_pty", lambda argv, **kw: (ptys.append((argv, kw["cwd"])), 3)[1])
+    assert bridge_mod._run_in_pty_with_bridge("Robo", ["claude"], "claudeRelay", "/r") == 3
+    assert popens == [["/usr/local/bin/node", str(bridge_mod.BRIDGE_BIN), "stdout", "--agent", "Robo", "--runtime", "claudeRelay", "--quiet"]]
+    assert ptys == [(["claude"], "/r")]

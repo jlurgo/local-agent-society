@@ -104,6 +104,15 @@ MailboxSource ──▶ Pipeline [interceptor, interceptor, …] ──▶ Sink
   `.claude.json` with `--runtime claudeRelay`, and execs Claude. Any
   `CLAUDE_CONFIG_DIR=~/.claude-NAME` maps to runtime `claudeName`; such a
   runtime inherits the `claude` descriptor (cli/agent_config.py).
+  A Team/Enterprise org without `channelsEnabled` makes Claude Code drop
+  every channel event (logged only in its MCP log: "channels not enabled
+  by org policy"). `las claude*` reads that verdict for the account's own
+  session ids and then runs Claude in the `las codex` PTY instead, fed by a
+  `stdout` bridge of the same runtime (`--pty` forces it, `--channel`
+  retries the channel). Chosen over the retired Monitor + `las agent listen`
+  path: Monitor expires at 30 min, bringing back the re-arm turns, and
+  depends on the model re-arming it; the PTY needs nothing from the model
+  and holds messages while the human types.
 - **CLI**: one command per runtime — `las claude [args]`, `las codex [args]`,
   `las shell` — each chaining MCP registration, presence and the widget
   before handing the terminal over (no alias, no separate steps), over the

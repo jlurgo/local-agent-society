@@ -449,7 +449,74 @@ def _use_account(account: str | None) -> None:
         os.environ.pop("LAS_CLAUDE_CONFIG", None)
 
 
-def _launch_claude(args, no_widget=False, account=None):
+# Claude Code drops every channel event, silently to the session, when the
+# account's organization (Team/Enterprise) has not enabled channels — it only
+# says so in its MCP log. Seen 2026-10-13 on the company login behind
+# `las claudeRelay`: the probe never arrived and the bridge stayed unarmed.
+CHANNELS_BLOCKED_MARK = "channels not enabled by org policy"
+MCP_LOGS_SCANNED = 50
+
+
+def mcp_log_root() -> Path:
+    """Where Claude Code writes per-project MCP server logs (shared by every config dir)."""
+    return Path.home() / "Library" / "Caches" / "claude-cli-nodejs"
+
+
+def channels_blocked(config_dir: Path | None) -> bool:
+    """Has Claude Code reported, for a session of this account, that its org policy drops channels?
+
+    Sessions of an account are the transcripts under <config_dir>/projects;
+    the verdict is the policy line in an MCP log carrying one of those
+    session ids. Only the most recent logs are read."""
+    if config_dir is None:
+        return False
+    sessions = {path.stem for path in config_dir.glob("projects/*/*.jsonl")}
+    if not sessions:
+        return False
+    def mtime(path):
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0
+    logs = sorted(mcp_log_root().glob(f"*/mcp-logs-{MCP_SERVER_NAME}/*.jsonl"), key=mtime, reverse=True)[:MCP_LOGS_SCANNED]
+    for log in logs:
+        try:
+            lines = log.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if CHANNELS_BLOCKED_MARK not in line:
+                continue
+            try:
+                if json.loads(line).get("sessionId") in sessions:
+                    return True
+            except (ValueError, AttributeError):
+                continue
+    return False
+
+
+def _run_in_pty_with_bridge(name: str, argv: list, runtime: str, cwd: str, intercept_url=None, port=None) -> int:
+    """A TUI in front, a `stdout` bridge behind it registered as `runtime`: every JSON
+    line the bridge prints is typed into the TUI (cli/pty_session.py). Returns the
+    TUI's exit code; the bridge dies with it."""
+    from cli import pty_session
+    bridge = subprocess.Popen(
+        bridge_argv("stdout", name, _common(["--runtime", runtime, "--quiet"], intercept_url, port)),
+        stdout=subprocess.PIPE, stdin=subprocess.DEVNULL,
+    )
+    try:
+        return pty_session.run_in_pty(argv, inject_fd=bridge.stdout.fileno(), cwd=cwd)
+    finally:
+        bridge.terminate()
+        try:
+            bridge.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            bridge.kill()
+
+
+def _launch_claude(args, no_widget=False, account=None, pty=None):
+    """`pty`: None = channel, unless this account's org is known to block channels;
+    True = type mailbox messages into Claude's prompt (like `las codex`); False = channel, always."""
     if inside_claude_session():
         # Not a launch: nested Claude with no TTY would just error. Guide instead.
         click.echo("You are already inside a Claude session — `las claude` opens a NEW one from a terminal.")
@@ -459,7 +526,16 @@ def _launch_claude(args, no_widget=False, account=None):
     if not shutil.which("claude"):
         click.echo("Error: claude not found on PATH.", err=True)
         raise SystemExit(1)
-    _chain(_agent_name_from_cwd(), widget=not no_widget)
+    name = _agent_name_from_cwd()
+    _chain(name, widget=not no_widget)
+    runtime = claude_runtime()
+    if pty is None and name and channels_blocked(claude_config_dir()):
+        click.echo(f"{runtime}: this account's organization blocks Claude Code channels — "
+                   f"delivering by typing into the prompt instead (`--channel` to try the channel again).", err=True)
+        pty = True
+    if pty and name:
+        # Claude works where you ARE; the agent is the nearest .las-agent.json upward.
+        raise SystemExit(_run_in_pty_with_bridge(name, [claude_bin(), *args], runtime, os.getcwd()))
     _exec([claude_bin(), CLAUDE_CHANNEL_FLAG, CLAUDE_CHANNEL_SERVER, *args])
 
 
@@ -480,7 +556,7 @@ class ClaudeGroup(click.Group):
         def passthrough(pctx, rest):
             parent = pctx.parent
             obj = parent.obj or {}
-            _launch_claude([*parent.args, name, *rest], obj.get("no_widget", False), obj.get("account"))
+            _launch_claude([*parent.args, name, *rest], obj.get("no_widget", False), obj.get("account"), obj.get("pty"))
 
         return passthrough
 
@@ -491,16 +567,17 @@ class ClaudeGroup(click.Group):
 @click.group("claude", cls=ClaudeGroup, invoke_without_command=True, context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
 @click.option("--no-widget", is_flag=True, help="Don't bring this agent's widget to the current Space.")
 @click.option("--account", default=None, metavar="NAME", help="Another Claude login on this Mac: config in ~/.claude-NAME, session shown as runtime claudeNAME (e.g. --account relay -> claudeRelay).")
+@click.option("--pty/--channel", "pty", default=None, help="How the mailbox reaches Claude: typed into its prompt (--pty, no channel needed) or the LAS channel (--channel). Default: the channel, unless this account's org blocks channels.")
 @click.pass_context
-def claude_cmd(ctx, no_widget, account):
+def claude_cmd(ctx, no_widget, account, pty):
     """Claude Code, connected to LAS: `las claude [claude args]` starts it here with the channel on, presence published and the widget on this Space.
 
     Everything after `las claude` that isn't one of the subcommands below goes to Claude Code as-is (`--resume`, a prompt, `mcp list`...).
     `--account relay` (or CLAUDE_CONFIG_DIR=~/.claude-relay) opens a second Claude account alongside the personal one.
     """
-    ctx.obj = {"no_widget": no_widget, "account": account}
+    ctx.obj = {"no_widget": no_widget, "account": account, "pty": pty}
     if ctx.invoked_subcommand is None:
-        _launch_claude(list(ctx.args), no_widget, account)
+        _launch_claude(list(ctx.args), no_widget, account, pty)
     else:
         # `las claude --account relay register` repairs THAT account's config.
         _use_account(account)
@@ -548,15 +625,19 @@ RELAY_ACCOUNT = "relay"
 
 @click.command("claudeRelay", context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []})
 @click.option("--no-widget", is_flag=True, help="Don't bring this agent's widget to the current Space.")
+@click.option("--pty/--channel", "pty", default=None, help="Typed into the prompt, or the LAS channel. Default: the channel unless the org blocks it.")
 @click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
-def claude_relay_cmd(no_widget, claude_args):
+def claude_relay_cmd(no_widget, pty, claude_args):
     """Claude Code on the second (company) account, connected to LAS — `las claude --account relay`.
 
     Config in ~/.claude-relay (created on first use, sharing CLAUDE.md/settings/skills/hooks with
     ~/.claude by symlink), session shown as runtime claudeRelay. First run: /login with that account.
     Every argument goes to Claude Code as-is (`--resume`, a prompt...).
+    When the account's organization blocks Claude Code channels (Team/Enterprise
+    without channelsEnabled — detected from Claude's own MCP log), messages are
+    typed into Claude's prompt instead, like `las codex`.
     """
-    _launch_claude(list(claude_args), no_widget, RELAY_ACCOUNT)
+    _launch_claude(list(claude_args), no_widget, RELAY_ACCOUNT, pty)
 
 
 # `codex --yolo` — the exact command the user runs by hand — opened inside a
@@ -578,20 +659,8 @@ def run_codex_interactive(name: str, agent_dir: str, codex_args=(), intercept_ur
     """Codex's TUI in front, the bridge behind: `las-bridge stdout` consumes this
     agent's mailbox as a `codex` session and every JSON line it prints is typed
     into the TUI. Returns Codex's exit code; the bridge dies with it."""
-    from cli import pty_session
-    bridge = subprocess.Popen(
-        bridge_argv("stdout", name, _common(["--runtime", "codex", "--quiet"], intercept_url, port)),
-        stdout=subprocess.PIPE, stdin=subprocess.DEVNULL,
-    )
-    try:
-        extra = [a for a in codex_args if a not in CODEX_YOLO_FLAGS]
-        return pty_session.run_in_pty([*CODEX_ARGV, *extra], inject_fd=bridge.stdout.fileno(), cwd=agent_dir)
-    finally:
-        bridge.terminate()
-        try:
-            bridge.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            bridge.kill()
+    extra = [a for a in codex_args if a not in CODEX_YOLO_FLAGS]
+    return _run_in_pty_with_bridge(name, [*CODEX_ARGV, *extra], "codex", agent_dir, intercept_url, port)
 
 
 @click.command("codex", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
