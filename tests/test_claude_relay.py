@@ -193,7 +193,10 @@ def test_channels_blocked_reads_claude_codes_own_verdict_for_this_accounts_sessi
 def _pty_spies(monkeypatch):
     calls, ptys = _launch_spies(monkeypatch)[0], []
     monkeypatch.setattr(bridge_mod, "_run_in_pty_with_bridge",
-                        lambda name, argv, runtime, cwd, *a: (ptys.append((name, argv, runtime, os.environ.get("CLAUDE_CONFIG_DIR"))), 0)[1])
+                        lambda name, argv, runtime, cwd, *a, resume_command=None: (
+                            ptys.append((name, argv, runtime, os.environ.get("CLAUDE_CONFIG_DIR"))), resumes.append(resume_command), 0)[2])
+    resumes = []
+    _pty_spies.resumes = resumes
     return calls, ptys
 
 
@@ -208,6 +211,8 @@ def test_claude_relay_falls_back_to_the_pty_when_its_org_blocks_channels(monkeyp
         assert ptys == [("Robo", ["claude", "--resume"], "claudeRelay", str(tmp_path / ".claude-relay"))], \
             "claude in a PTY, without the channel flag, fed by a claudeRelay session bridge"
         assert "blocks Claude Code channels" in result.output
+        assert _pty_spies.resumes[-1] == "las claudeRelay", \
+            "Claude's goodbye says bare `claude --resume` (personal account, no LAS): the PTY prints the claudeRelay one"
 
         ptys.clear()
         CliRunner().invoke(cli, ["claudeRelay", "--channel"])
@@ -221,6 +226,7 @@ def test_pty_can_be_asked_for_explicitly_on_any_account(monkeypatch, tmp_path):
     result = CliRunner().invoke(cli, ["claude", "--pty", "--resume"])
     assert result.exit_code == 0, result.output
     assert ptys == [("Robo", ["claude", "--resume"], "claude", None)] and calls == []
+    assert _pty_spies.resumes[-1] == "las claude"
 
 
 def test_run_in_pty_with_bridge_wires_a_session_bridge_of_that_runtime(monkeypatch):

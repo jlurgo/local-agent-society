@@ -102,3 +102,117 @@ def test_on_a_picker_messages_wait_until_the_human_has_chosen():
     assert code == 0
     assert "a=2|" in output, "the picker got the human's choice, not the message"
     assert "a=2|b=\x1b[200~[LAS message from Robo] ping" in output, "the message went in (as a paste) right after the choice"
+
+
+# --- The human's terminal always comes back (2026-10-14: after `las claudeRelay`
+# José's Ghostty stair-stepped — OPOST/ONLCR left off on the tty itself).
+
+import pty
+import select
+import signal
+import sys
+import termios
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+
+
+def _las_on_a_terminal(tui_argv, keeper=True):
+    """Fork a stand-in `las` whose stdin/stdout is a real PTY (the "human's
+    terminal") running run_in_pty(tui_argv). A keeper process holds that
+    terminal open so its termios can still be read through the master after
+    `las` is gone. Returns (las_pid, master_fd, keeper_pid)."""
+    pid, master = pty.fork()
+    if pid == 0:
+        keeper_pid = 0
+        if keeper and os.fork() == 0:
+            time.sleep(20)
+            os._exit(0)
+        os.execv(sys.executable, [sys.executable, "-c", f"""
+import sys, os; sys.path.insert(0, {str(REPO)!r})
+from cli.pty_session import run_in_pty
+code = run_in_pty({tui_argv!r}, resume_command="las claudeRelay")
+os.write(1, b"LAS-RETURNED %d\\r\\n" % code)
+"""])
+    return pid, master
+
+
+def _read_until(master, needle, timeout):
+    out, end = b"", time.monotonic() + timeout
+    while time.monotonic() < end and needle not in out:
+        r, _, _ = select.select([master], [], [], 0.1)
+        if r:
+            try:
+                data = os.read(master, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            out += data
+    return out
+
+
+def _raw(master):
+    attrs = termios.tcgetattr(master)
+    return not (attrs[1] & termios.OPOST) or not (attrs[3] & termios.ICANON)
+
+
+def _cleanup(pid, master):
+    os.close(master)
+    try:
+        os.killpg(pid, signal.SIGKILL)  # the keeper shares the stand-in's session/group
+    except OSError:
+        pass
+    try:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
+
+
+def test_terminal_restored_when_las_is_killed():
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        pid, master = _las_on_a_terminal(["/bin/sh", "-c", "echo TUI-UP; sleep 30"])
+        try:
+            assert b"TUI-UP" in _read_until(master, b"TUI-UP", 10)
+            assert _raw(master), "precondition: las put the terminal in raw mode"
+            os.kill(pid, sig)
+            _, status = os.waitpid(pid, 0)
+            assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == sig, "las still dies of the signal"
+            assert not _raw(master), f"{signal.Signals(sig).name}: the terminal must be back to cooked mode"
+        finally:
+            _cleanup(pid, master)
+
+
+def test_las_returns_when_the_tui_exits_even_if_a_child_keeps_its_pty_open():
+    """Claude leaves MCP servers / shell jobs behind holding the PTY: waiting for
+    EOF would hang `las` with the human's terminal still raw."""
+    pid, master = _las_on_a_terminal(["/bin/sh", "-c", "trap '' HUP; sleep 30 & echo TUI-UP; exit 4"])
+    try:
+        start = time.monotonic()
+        out = _read_until(master, b"LAS-RETURNED", 10)
+        assert b"LAS-RETURNED 4" in out, out
+        assert time.monotonic() - start < 5
+        assert not _raw(master)
+    finally:
+        _cleanup(pid, master)
+
+
+def test_goodbye_resume_hint_names_the_las_command():
+    goodbye = "printf '\\033[2mResume this session with:\\033[0m\\nclaude --resume 1cb3f484-8d21-418e-80da-f9310c9e01de\\n'"
+    pid, master = _las_on_a_terminal(["/bin/sh", "-c", goodbye], keeper=False)
+    try:
+        out = _read_until(master, b"LAS-RETURNED", 10).decode(errors="replace")
+        assert "With LAS: las claudeRelay --resume 1cb3f484-8d21-418e-80da-f9310c9e01de" in out
+    finally:
+        _cleanup(pid, master)
+
+
+def test_resume_id_reads_claude_and_codex_goodbyes():
+    assert pty_session.resume_id("\x1b[2mResume this session with:\x1b[0m\nclaude --resume 1cb3f484-8d21-418e-80da-f9310c9e01de") \
+        == "1cb3f484-8d21-418e-80da-f9310c9e01de"
+    assert pty_session.resume_id("To continue this session, run codex resume 01a131b1-b4ec-73a2-9712-e83c525e586f") \
+        == "01a131b1-b4ec-73a2-9712-e83c525e586f"
+    assert pty_session.resume_id("bye") is None
+    assert pty_session._resume_verb("las codex") == "resume"
+    assert pty_session._resume_verb("las claude --account work") == "--resume"

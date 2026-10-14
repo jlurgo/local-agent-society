@@ -76,11 +76,19 @@ RECONNECT_GUIDE = (
 
 def reconnect_guide() -> str:
     """RECONNECT_GUIDE, naming the account when this shell belongs to a non-default Claude config dir."""
+    command = las_claude_command()
+    if command == "las claude":
+        return RECONNECT_GUIDE
+    return RECONNECT_GUIDE.replace("las claude --resume", f"{command} --resume")
+
+
+def las_claude_command() -> str:
+    """The `las` command that opens Claude with the account in effect: "las claude",
+    "las claudeRelay", or "las claude --account NAME"."""
     account = claude_account()
     if not account:
-        return RECONNECT_GUIDE
-    command = "las claudeRelay" if account == RELAY_ACCOUNT else f"las claude --account {account}"
-    return RECONNECT_GUIDE.replace("las claude --resume", f"{command} --resume")
+        return "las claude"
+    return "las claudeRelay" if account == RELAY_ACCOUNT else f"las claude --account {account}"
 
 
 def inside_claude_session() -> bool:
@@ -495,7 +503,8 @@ def channels_blocked(config_dir: Path | None) -> bool:
     return False
 
 
-def _run_in_pty_with_bridge(name: str, argv: list, runtime: str, cwd: str, intercept_url=None, port=None, hold_until_submit=False) -> int:
+def _run_in_pty_with_bridge(name: str, argv: list, runtime: str, cwd: str, intercept_url=None, port=None, hold_until_submit=False,
+                            resume_command=None) -> int:
     """A TUI in front, a `stdout` bridge behind it registered as `runtime`: every JSON
     line the bridge prints is typed into the TUI (cli/pty_session.py). Returns the
     TUI's exit code; the bridge dies with it."""
@@ -505,7 +514,8 @@ def _run_in_pty_with_bridge(name: str, argv: list, runtime: str, cwd: str, inter
         stdout=subprocess.PIPE, stdin=subprocess.DEVNULL,
     )
     try:
-        return pty_session.run_in_pty(argv, inject_fd=bridge.stdout.fileno(), cwd=cwd, hold_until_submit=hold_until_submit)
+        return pty_session.run_in_pty(argv, inject_fd=bridge.stdout.fileno(), cwd=cwd, hold_until_submit=hold_until_submit,
+                                          resume_command=resume_command)
     finally:
         bridge.terminate()
         try:
@@ -535,7 +545,10 @@ def _launch_claude(args, no_widget=False, account=None, pty=None):
         pty = True
     if pty and name:
         # Claude works where you ARE; the agent is the nearest .las-agent.json upward.
-        raise SystemExit(_run_in_pty_with_bridge(name, [claude_bin(), *args], runtime, os.getcwd()))
+        # Claude's goodbye says `claude --resume <id>` — bare claude is the wrong
+        # account and no LAS, so the right command is printed after it.
+        raise SystemExit(_run_in_pty_with_bridge(name, [claude_bin(), *args], runtime, os.getcwd(),
+                                                 resume_command=las_claude_command()))
     _exec([claude_bin(), CLAUDE_CHANNEL_FLAG, CLAUDE_CHANNEL_SERVER, *args])
 
 
@@ -717,7 +730,7 @@ def run_codex_interactive(name: str, agent_dir: str, codex_args=(), intercept_ur
     into the TUI. Returns Codex's exit code; the bridge dies with it."""
     extra = [a for a in codex_args if a not in CODEX_YOLO_FLAGS]
     return _run_in_pty_with_bridge(name, [*CODEX_ARGV, *with_codex_cd(extra, agent_dir)], "codex", agent_dir, intercept_url, port,
-                                   hold_until_submit=codex_opens_picker(extra))
+                                   hold_until_submit=codex_opens_picker(extra), resume_command="las codex")
 
 
 @click.command("codex", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
