@@ -64,7 +64,7 @@ The command writes `.las-agent.json`, registers the agent with the backend, assi
 ### System
 ```
 las status                              # backend status, agents, ports
-las start / stop                        # start or stop the backend
+las start / stop                        # start or stop the backend (via launchd: backend/service.sh)
 las logs                                # tail backend log
 las install                             # run install.sh (compile widget, launchd, CLI)
 las uninstall                           # run uninstall.sh (remove the system)

@@ -1,29 +1,12 @@
 {
-  "updatedAt": "2026-10-14T14:18:37.828Z",
+  "updatedAt": "2026-10-14T14:28:53.857Z",
   "widgets": [
     {
       "name": "DataLake",
       "space": "11",
-      "grown": false,
-      "want": true,
-      "why": "off-Space (on 11, showing 12)",
-      "onTile": null,
-      "retries": 0,
-      "latched": false,
-      "bounds": {
-        "x": 1275,
-        "y": 208,
-        "width": 300,
-        "height": 160
-      },
-      "tile": null
-    },
-    {
-      "name": "LocalAgentSociety",
-      "space": "6",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 6, showing 12)",
+      "why": "off-Space (on 11, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -31,13 +14,13 @@
         "x": 0,
         "y": 33,
         "width": 1728,
-        "height": 509
+        "height": 1018
       },
       "tile": {
         "x": 0,
         "y": 33,
         "width": 1728,
-        "height": 509
+        "height": 1018
       }
     },
     {
@@ -45,7 +28,7 @@
       "space": "10",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 10, showing 12)",
+      "why": "off-Space (on 10, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -67,7 +50,7 @@
       "space": "9",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 9, showing 12)",
+      "why": "off-Space (on 9, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -89,7 +72,7 @@
       "space": "8",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 8, showing 12)",
+      "why": "off-Space (on 8, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -111,7 +94,7 @@
       "space": "3",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 3, showing 12)",
+      "why": "off-Space (on 3, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -133,7 +116,7 @@
       "space": "13",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 13, showing 12)",
+      "why": "off-Space (on 13, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -155,7 +138,7 @@
       "space": "14",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 14, showing 12)",
+      "why": "off-Space (on 14, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -177,7 +160,7 @@
       "space": "1",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 1, showing 12)",
+      "why": "off-Space (on 1, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -199,7 +182,7 @@
       "space": "5",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 5, showing 12)",
+      "why": "off-Space (on 5, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -221,7 +204,7 @@
       "space": "4",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 4, showing 12)",
+      "why": "off-Space (on 4, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -243,7 +226,7 @@
       "space": "1",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 1, showing 12)",
+      "why": "off-Space (on 1, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -263,31 +246,26 @@
     {
       "name": "Vortexia",
       "space": "6",
-      "grown": true,
-      "want": true,
-      "why": "off-Space (on 6, showing 12)",
-      "onTile": true,
+      "grown": false,
+      "want": false,
+      "why": "on the current Space",
+      "onTile": null,
       "retries": 0,
       "latched": false,
       "bounds": {
-        "x": 0,
-        "y": 542,
-        "width": 1728,
-        "height": 509
+        "x": 617,
+        "y": 733,
+        "width": 300,
+        "height": 160
       },
-      "tile": {
-        "x": 0,
-        "y": 542,
-        "width": 1728,
-        "height": 509
-      }
+      "tile": null
     },
     {
       "name": "Wavi",
       "space": "3",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 3, showing 12)",
+      "why": "off-Space (on 3, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -309,7 +287,7 @@
       "space": "312",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 312, showing 12)",
+      "why": "off-Space (on 312, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -331,7 +309,7 @@
       "space": "1",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 1, showing 12)",
+      "why": "off-Space (on 1, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -353,7 +331,7 @@
       "space": "1",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 1, showing 12)",
+      "why": "off-Space (on 1, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -373,26 +351,31 @@
     {
       "name": "dev-relay-brain",
       "space": "12",
-      "grown": false,
-      "want": false,
-      "why": "on the current Space",
-      "onTile": null,
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 12, showing 6)",
+      "onTile": true,
       "retries": 0,
       "latched": false,
       "bounds": {
-        "x": 567,
-        "y": 727,
-        "width": 295,
-        "height": 249
+        "x": 0,
+        "y": 33,
+        "width": 864,
+        "height": 1018
       },
-      "tile": null
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 864,
+        "height": 1018
+      }
     },
     {
       "name": "dev-simulator",
       "space": "312",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 312, showing 12)",
+      "why": "off-Space (on 312, showing 6)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -412,6 +395,28 @@
     {
       "name": "relay-reviewer",
       "space": "12",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 12, showing 6)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 864,
+        "y": 33,
+        "width": 864,
+        "height": 1018
+      },
+      "tile": {
+        "x": 864,
+        "y": 33,
+        "width": 864,
+        "height": 1018
+      }
+    },
+    {
+      "name": "LocalAgentSociety",
+      "space": "6",
       "grown": false,
       "want": false,
       "why": "on the current Space",
@@ -419,8 +424,8 @@
       "retries": 0,
       "latched": false,
       "bounds": {
-        "x": 1212,
-        "y": 254,
+        "x": 813,
+        "y": 130,
         "width": 300,
         "height": 160
       },

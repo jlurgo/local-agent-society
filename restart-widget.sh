@@ -26,6 +26,8 @@ else
     echo "restart-widget: mic idle — restarting without warning"
 fi
 
+# stop.sh / start.sh go through backend/service.sh: under launchd the
+# backend is restarted by launchctl, never re-spawned as a manual process.
 "$SYSTEM_DIR/stop.sh"
 sleep 2
 "$SYSTEM_DIR/start.sh"

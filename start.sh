@@ -2,7 +2,9 @@
 SYSTEM_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # ── backend ───────────────────────────────────────────────────────────────────
-bash "$SYSTEM_DIR/backend/start.sh"
+# Through launchd when the LaunchAgent is installed, never a manual process
+# next to it (backend/service.sh, docs/adr/0002).
+bash "$SYSTEM_DIR/backend/service.sh" start
 
 # ── Local Agent Society widget (Electron) ───────────────────────────────────────
 # Canonical packaged app is "Local Agent Society.app", built by

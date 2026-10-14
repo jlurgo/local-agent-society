@@ -1,25 +1,11 @@
 #!/bin/bash
 SYSTEM_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PID_FILE="$SYSTEM_DIR/backend/backend.pid"
 
 # ── backend ───────────────────────────────────────────────────────────────────
-if [ -f "$PID_FILE" ]; then
-    PID=$(cat "$PID_FILE")
-    if kill -0 "$PID" 2>/dev/null; then
-        kill "$PID" && echo "Backend    → stopped (PID $PID)"
-    else
-        echo "Backend    → not running"
-    fi
-    rm "$PID_FILE"
-else
-    # Fallback: kill by port
-    PID=$(lsof -ti tcp:8700 2>/dev/null)
-    if [ -n "$PID" ]; then
-        kill $PID && echo "Backend    → stopped (PID $PID)"
-    else
-        echo "Backend    → not running"
-    fi
-fi
+# Through launchd when the LaunchAgent is installed (backend/service.sh,
+# docs/adr/0002): a plain kill of a KeepAlive job either comes straight back
+# or, on a clean exit, leaves launchd and the port out of step.
+bash "$SYSTEM_DIR/backend/service.sh" stop
 
 # ── widget (Electron) ────────────────────────────────────────────────────────
 # Covers both the packaged app (process name matches the productName, "Local

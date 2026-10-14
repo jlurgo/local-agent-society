@@ -105,3 +105,39 @@ API worth building for two processes.
   not as a side effect of this ADR landing.
 - `las start`'s existing "already running" port check means it won't fight
   a launchd-managed backend once the cutover happens.
+
+## Addendum 2026-10-14 — one way in: `backend/service.sh`
+
+The last consequence above did not hold. `las start` / `las restart`
+(`start.sh`, `restart-widget.sh`) still called `backend/start.sh`, which
+spawns uvicorn by hand whenever `:8700` is free. Any stop-then-start
+therefore replaced the supervised backend with an unsupervised one, and the
+launchd job then died on `[Errno 48] address already in use` until someone
+noticed: seen 2026-09-14 and again 2026-09-28 (301 failed runs). It was
+dodged by hand once more on 2026-10-14.
+
+Decision: **`backend/service.sh start|stop|restart|status` is the only entry
+point**, and every script goes through it:
+
+| Caller | Before | Now |
+|---|---|---|
+| `start.sh` (`las start`, `update.sh`) | `backend/start.sh` (manual uvicorn) | `service.sh start` |
+| `stop.sh` (`las stop`, `restart-widget.sh`) | kill the pid file / whatever holds :8700 | `service.sh stop` |
+| `backend/start.sh`, `backend/stop.sh` run by hand | manual process | hand over to `service.sh` when the LaunchAgent exists; `--manual` for the old behaviour |
+
+With the LaunchAgent installed, `service.sh` only uses `launchctl`:
+
+- `start`: `bootstrap` if the job isn't loaded, `kickstart` if it's loaded but idle.
+- `stop`: `bootout`. The backend stays stopped until `start` or the next login.
+- `restart`: `kickstart -k`.
+
+Before any of these it removes a stray, meaning a process listening on the
+port that is not the job's pid, and deletes `backend.pid`. Without the
+LaunchAgent (not installed, or not macOS) it falls back to the manual
+scripts, so Windows and Linux behave exactly as before until they get their
+own supervisor.
+
+Tests: `tests/test_backend_service.py` runs the real script against a fake
+`launchctl` that keeps the job state and listens on the port. It also runs
+a real stray listener, and checks that no top-level script calls
+`backend/start.sh` anymore.
