@@ -655,12 +655,39 @@ CODEX_YOLO_FLAGS = {"--yolo", "--dangerously-bypass-approvals-and-sandbox"}
 CODEX_DEFAULT_CMD = "codex exec --yolo -"
 
 
+# Codex records the working directory with each session and `codex resume`
+# (or `fork`) goes back to THAT directory, not the one it was started from.
+# After a folder rename (Relay: agents -> local-agents, 2026-10-14) every
+# resumed session kept executing in the removed path, though `las codex
+# resume` ran from the new one. So `las codex` always names the directory
+# explicitly — `-C` is an option of `resume`/`fork` themselves and of the
+# top level, never of the other subcommands (login, mcp...).
+CODEX_CD_SUBCOMMANDS = {"resume", "fork"}
+CODEX_OTHER_SUBCOMMANDS = {
+    "agents", "exec", "e", "review", "login", "logout", "mcp", "plugin", "app-server", "remote-control", "app",
+    "completion", "update", "doctor", "sandbox", "debug", "apply", "queue", "archive", "delete", "migrate-rollouts",
+    "unarchive", "cloud", "exec-server", "features", "help",
+}
+
+
+def with_codex_cd(args: list, cwd: str) -> list:
+    """`args` with `-C <cwd>` where Codex reads it, unless the caller already chose a directory."""
+    if any(a in ("-C", "--cd") or a.startswith("--cd=") for a in args):
+        return list(args)
+    first = args[0] if args else None
+    if first in CODEX_CD_SUBCOMMANDS:
+        return [first, "-C", cwd, *args[1:]]
+    if first in CODEX_OTHER_SUBCOMMANDS:
+        return list(args)
+    return ["-C", cwd, *args]
+
+
 def run_codex_interactive(name: str, agent_dir: str, codex_args=(), intercept_url=None, port=None) -> int:
     """Codex's TUI in front, the bridge behind: `las-bridge stdout` consumes this
     agent's mailbox as a `codex` session and every JSON line it prints is typed
     into the TUI. Returns Codex's exit code; the bridge dies with it."""
     extra = [a for a in codex_args if a not in CODEX_YOLO_FLAGS]
-    return _run_in_pty_with_bridge(name, [*CODEX_ARGV, *extra], "codex", agent_dir, intercept_url, port)
+    return _run_in_pty_with_bridge(name, [*CODEX_ARGV, *with_codex_cd(extra, agent_dir)], "codex", agent_dir, intercept_url, port)
 
 
 @click.command("codex", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
@@ -686,6 +713,8 @@ def codex_cmd(command, no_widget, intercept_url, port, codex_args):
     # Codex works where you ARE, not at the agent's root: the agent identity
     # comes from the nearest .las-agent.json upward, the working directory is
     # the one you launched from — exactly like running `codex --yolo` by hand.
+    # os.getcwd() is the physical path (symlinks resolved): the canonical one
+    # even when the shell got there through a compatibility alias.
     raise SystemExit(run_codex_interactive(name, os.getcwd(), codex_args, intercept_url, port))
 
 

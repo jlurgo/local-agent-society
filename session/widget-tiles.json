@@ -1,12 +1,12 @@
 {
-  "updatedAt": "2026-10-14T14:28:53.857Z",
+  "updatedAt": "2026-10-14T14:34:51.406Z",
   "widgets": [
     {
       "name": "DataLake",
       "space": "11",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 11, showing 6)",
+      "why": "off-Space (on 11, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -28,7 +28,7 @@
       "space": "10",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 10, showing 6)",
+      "why": "off-Space (on 10, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -50,7 +50,7 @@
       "space": "9",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 9, showing 6)",
+      "why": "off-Space (on 9, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -72,7 +72,7 @@
       "space": "8",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 8, showing 6)",
+      "why": "off-Space (on 8, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -94,7 +94,7 @@
       "space": "3",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 3, showing 6)",
+      "why": "off-Space (on 3, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -116,7 +116,7 @@
       "space": "13",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 13, showing 6)",
+      "why": "off-Space (on 13, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -138,7 +138,7 @@
       "space": "14",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 14, showing 6)",
+      "why": "off-Space (on 14, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -158,31 +158,26 @@
     {
       "name": "RelayRobotics",
       "space": "1",
-      "grown": true,
-      "want": true,
-      "why": "off-Space (on 1, showing 6)",
-      "onTile": true,
+      "grown": false,
+      "want": false,
+      "why": "on the current Space",
+      "onTile": null,
       "retries": 0,
       "latched": false,
       "bounds": {
-        "x": 0,
-        "y": 542,
-        "width": 864,
-        "height": 509
+        "x": 684,
+        "y": 628,
+        "width": 300,
+        "height": 160
       },
-      "tile": {
-        "x": 0,
-        "y": 542,
-        "width": 864,
-        "height": 509
-      }
+      "tile": null
     },
     {
       "name": "RuGIAR",
       "space": "5",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 5, showing 6)",
+      "why": "off-Space (on 5, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -204,7 +199,7 @@
       "space": "4",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 4, showing 6)",
+      "why": "off-Space (on 4, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -224,28 +219,6 @@
     {
       "name": "Team Knowledge",
       "space": "1",
-      "grown": true,
-      "want": true,
-      "why": "off-Space (on 1, showing 6)",
-      "onTile": true,
-      "retries": 0,
-      "latched": false,
-      "bounds": {
-        "x": 864,
-        "y": 542,
-        "width": 864,
-        "height": 509
-      },
-      "tile": {
-        "x": 864,
-        "y": 542,
-        "width": 864,
-        "height": 509
-      }
-    },
-    {
-      "name": "Vortexia",
-      "space": "6",
       "grown": false,
       "want": false,
       "why": "on the current Space",
@@ -253,19 +226,41 @@
       "retries": 0,
       "latched": false,
       "bounds": {
-        "x": 617,
-        "y": 733,
+        "x": 325,
+        "y": 500,
         "width": 300,
         "height": 160
       },
       "tile": null
     },
     {
+      "name": "Vortexia",
+      "space": "6",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 6, showing 1)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 542,
+        "width": 1728,
+        "height": 509
+      },
+      "tile": {
+        "x": 0,
+        "y": 542,
+        "width": 1728,
+        "height": 509
+      }
+    },
+    {
       "name": "Wavi",
       "space": "3",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 3, showing 6)",
+      "why": "off-Space (on 3, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -287,7 +282,7 @@
       "space": "312",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 312, showing 6)",
+      "why": "off-Space (on 312, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -301,50 +296,6 @@
         "x": 0,
         "y": 33,
         "width": 1728,
-        "height": 509
-      }
-    },
-    {
-      "name": "billing",
-      "space": "1",
-      "grown": true,
-      "want": true,
-      "why": "off-Space (on 1, showing 6)",
-      "onTile": true,
-      "retries": 0,
-      "latched": false,
-      "bounds": {
-        "x": 0,
-        "y": 33,
-        "width": 864,
-        "height": 509
-      },
-      "tile": {
-        "x": 0,
-        "y": 33,
-        "width": 864,
-        "height": 509
-      }
-    },
-    {
-      "name": "coach",
-      "space": "1",
-      "grown": true,
-      "want": true,
-      "why": "off-Space (on 1, showing 6)",
-      "onTile": true,
-      "retries": 0,
-      "latched": false,
-      "bounds": {
-        "x": 864,
-        "y": 33,
-        "width": 864,
-        "height": 509
-      },
-      "tile": {
-        "x": 864,
-        "y": 33,
-        "width": 864,
         "height": 509
       }
     },
@@ -353,7 +304,7 @@
       "space": "12",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 12, showing 6)",
+      "why": "off-Space (on 12, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -375,7 +326,7 @@
       "space": "312",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 312, showing 6)",
+      "why": "off-Space (on 312, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -397,7 +348,7 @@
       "space": "12",
       "grown": true,
       "want": true,
-      "why": "off-Space (on 12, showing 6)",
+      "why": "off-Space (on 12, showing 1)",
       "onTile": true,
       "retries": 0,
       "latched": false,
@@ -415,8 +366,8 @@
       }
     },
     {
-      "name": "LocalAgentSociety",
-      "space": "6",
+      "name": "billing",
+      "space": "1",
       "grown": false,
       "want": false,
       "why": "on the current Space",
@@ -424,12 +375,51 @@
       "retries": 0,
       "latched": false,
       "bounds": {
-        "x": 813,
+        "x": 507,
         "y": 130,
         "width": 300,
         "height": 160
       },
       "tile": null
+    },
+    {
+      "name": "coach",
+      "space": "1",
+      "grown": false,
+      "want": false,
+      "why": "on the current Space",
+      "onTile": null,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 954,
+        "y": 230,
+        "width": 300,
+        "height": 160
+      },
+      "tile": null
+    },
+    {
+      "name": "LocalAgentSociety",
+      "space": "6",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 6, showing 1)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 509
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 509
+      }
     }
   ]
 }

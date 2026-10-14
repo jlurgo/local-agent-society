@@ -253,12 +253,26 @@ def test_run_codex_interactive_wires_a_codex_session_bridge_into_the_pty(monkeyp
     code = bridge_mod.run_codex_interactive("Robo", "/r", ("--model", "m"))
     assert code == 7
     assert popens == [["/usr/local/bin/node", str(bridge_mod.BRIDGE_BIN), "stdout", "--agent", "Robo", "--runtime", "codex", "--quiet"]]
-    assert ptys == [(["codex", "--yolo", "--model", "m"], "/r")]
+    assert ptys == [(["codex", "--yolo", "-C", "/r", "--model", "m"], "/r")]
 
     # `las codex --yolo` (or the long spelling) must not hand codex the flag twice.
     ptys.clear()
     bridge_mod.run_codex_interactive("Robo", "/r", ("--yolo", "resume", "--dangerously-bypass-approvals-and-sandbox"))
-    assert ptys == [(["codex", "--yolo", "resume"], "/r")]
+    assert ptys == [(["codex", "--yolo", "resume", "-C", "/r"], "/r")]
+
+
+def test_las_codex_names_the_directory_explicitly_so_resume_never_returns_to_a_stale_path():
+    """Regression 2026-10-14 (Relay renamed agents -> local-agents): `codex resume`
+    went back to the directory recorded with the session — a removed path —
+    though it was launched from the new one. -C goes where Codex reads it."""
+    cd = bridge_mod.with_codex_cd
+    assert cd([], "/new") == ["-C", "/new"]
+    assert cd(["resume", "--last"], "/new") == ["resume", "-C", "/new", "--last"], "resume's own -C"
+    assert cd(["fork", "abc"], "/new") == ["fork", "-C", "/new", "abc"]
+    assert cd(["fix the tests"], "/new") == ["-C", "/new", "fix the tests"], "a prompt: top-level -C"
+    assert cd(["login"], "/new") == ["login"], "other subcommands take no -C"
+    assert cd(["resume", "-C", "/mine"], "/new") == ["resume", "-C", "/mine"], "the caller's choice wins"
+    assert cd(["--cd=/mine"], "/new") == ["--cd=/mine"]
 
 
 def test_las_codex_refuses_clearly_when_codex_is_missing(monkeypatch, tmp_path):
