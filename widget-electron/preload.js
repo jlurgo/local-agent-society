@@ -26,7 +26,7 @@ contextBridge.exposeInMainWorld('las', {
   /** Speak-queue handshake: report one speak envelope's progress back to the
    * backend drainer (POST /queue/ack) so the NEXT agent's clip is held until
    * this one is over. phase: 'started' | 'done' | 'skipped' (+ reason). */
-  ackSpeak: (id, phase, reason) => ipcRenderer.invoke('queue:ack', id, phase, reason),
+  ackSpeak: (id, phase, reason, durationMs) => ipcRenderer.invoke('queue:ack', id, phase, reason, durationMs),
 
   /** Progress pushes during synthesizeSpeech (model download/load vs.
    * inference), same shape as onAudioStatus below.
@@ -59,7 +59,9 @@ contextBridge.exposeInMainWorld('las', {
   /** "Expand when hidden" (retired Swift "Expand on space change"): balloon
    * to fill the screen, click-through, when occluded/off-Space; shrink back
    * when visible again. See main.js's window:set-occlusion-expanded comment. */
-  setOcclusionExpanded: (expanded) => ipcRenderer.send('window:set-occlusion-expanded', expanded),
+  reportVisibility: (hidden, allowed) => ipcRenderer.send('window:report-visibility', hidden, allowed),
+  /** Main decides whether this widget is grown to its mosaic tile (main.js tile reconciler) and tells the face here. */
+  onOcclusionState: (cb) => ipcRenderer.on('window:occlusion-state', (_e, expanded) => cb(expanded)),
 
   /** @param {(envelope: object, topic: string) => void} cb */
   onVortexiaMessage: (cb) => {

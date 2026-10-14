@@ -1,0 +1,430 @@
+{
+  "updatedAt": "2026-10-14T14:18:37.828Z",
+  "widgets": [
+    {
+      "name": "DataLake",
+      "space": "11",
+      "grown": false,
+      "want": true,
+      "why": "off-Space (on 11, showing 12)",
+      "onTile": null,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 1275,
+        "y": 208,
+        "width": 300,
+        "height": 160
+      },
+      "tile": null
+    },
+    {
+      "name": "LocalAgentSociety",
+      "space": "6",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 6, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 509
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 509
+      }
+    },
+    {
+      "name": "LocalModels",
+      "space": "10",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 10, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      }
+    },
+    {
+      "name": "Luganense",
+      "space": "9",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 9, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      }
+    },
+    {
+      "name": "Minis App Acces",
+      "space": "8",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 8, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      }
+    },
+    {
+      "name": "Monkey",
+      "space": "3",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 3, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 864,
+        "height": 1018
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 864,
+        "height": 1018
+      }
+    },
+    {
+      "name": "NeuroFlow",
+      "space": "13",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 13, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      }
+    },
+    {
+      "name": "Pulpo",
+      "space": "14",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 14, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      }
+    },
+    {
+      "name": "RelayRobotics",
+      "space": "1",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 1, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 542,
+        "width": 864,
+        "height": 509
+      },
+      "tile": {
+        "x": 0,
+        "y": 542,
+        "width": 864,
+        "height": 509
+      }
+    },
+    {
+      "name": "RuGIAR",
+      "space": "5",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 5, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      }
+    },
+    {
+      "name": "System",
+      "space": "4",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 4, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 1018
+      }
+    },
+    {
+      "name": "Team Knowledge",
+      "space": "1",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 1, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 864,
+        "y": 542,
+        "width": 864,
+        "height": 509
+      },
+      "tile": {
+        "x": 864,
+        "y": 542,
+        "width": 864,
+        "height": 509
+      }
+    },
+    {
+      "name": "Vortexia",
+      "space": "6",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 6, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 542,
+        "width": 1728,
+        "height": 509
+      },
+      "tile": {
+        "x": 0,
+        "y": 542,
+        "width": 1728,
+        "height": 509
+      }
+    },
+    {
+      "name": "Wavi",
+      "space": "3",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 3, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 864,
+        "y": 33,
+        "width": 864,
+        "height": 1018
+      },
+      "tile": {
+        "x": 864,
+        "y": 33,
+        "width": 864,
+        "height": 1018
+      }
+    },
+    {
+      "name": "bau",
+      "space": "312",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 312, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 509
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 1728,
+        "height": 509
+      }
+    },
+    {
+      "name": "billing",
+      "space": "1",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 1, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 33,
+        "width": 864,
+        "height": 509
+      },
+      "tile": {
+        "x": 0,
+        "y": 33,
+        "width": 864,
+        "height": 509
+      }
+    },
+    {
+      "name": "coach",
+      "space": "1",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 1, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 864,
+        "y": 33,
+        "width": 864,
+        "height": 509
+      },
+      "tile": {
+        "x": 864,
+        "y": 33,
+        "width": 864,
+        "height": 509
+      }
+    },
+    {
+      "name": "dev-relay-brain",
+      "space": "12",
+      "grown": false,
+      "want": false,
+      "why": "on the current Space",
+      "onTile": null,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 567,
+        "y": 727,
+        "width": 295,
+        "height": 249
+      },
+      "tile": null
+    },
+    {
+      "name": "dev-simulator",
+      "space": "312",
+      "grown": true,
+      "want": true,
+      "why": "off-Space (on 312, showing 12)",
+      "onTile": true,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 0,
+        "y": 542,
+        "width": 1728,
+        "height": 509
+      },
+      "tile": {
+        "x": 0,
+        "y": 542,
+        "width": 1728,
+        "height": 509
+      }
+    },
+    {
+      "name": "relay-reviewer",
+      "space": "12",
+      "grown": false,
+      "want": false,
+      "why": "on the current Space",
+      "onTile": null,
+      "retries": 0,
+      "latched": false,
+      "bounds": {
+        "x": 1212,
+        "y": 254,
+        "width": 300,
+        "height": 160
+      },
+      "tile": null
+    }
+  ]
+}

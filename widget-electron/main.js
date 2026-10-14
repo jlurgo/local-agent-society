@@ -17,7 +17,7 @@
  * Explicitly NOT ported: marquee text, drag-to-link-tty, and the command
  * palette from tray.swift (its trimmed-down port was later removed in favor
  * of the two-action "Open" button — see the agent:open section below). (Mosaic/tiling layout for multiple occlusion-expanded
- * widgets sharing a display WAS ported — see mosaicTiles/applyMosaicLayout
+ * widgets sharing a display WAS ported — see mosaicTiles + the tile reconciler
  * below.)
  * (Mic/STT dictation IS implemented — via local offline Whisper, not the
  * Web Speech API; see the "audio transcription" section below for why.)
@@ -391,7 +391,7 @@ function createWidgetWindow(name, { forgetPosition = false } = {}) {
       // also stops 'hidden' from ever firing at all — confirmed live
       // (zero visibilitychange events across a real Space switch with
       // throttling permanently off, vs. firing correctly with it on).
-      // The actual fix is dynamic: window:set-occlusion-expanded below
+      // The actual fix is dynamic: the tile reconciler below
       // flips webContents.setBackgroundThrottling() off ONLY once occlusion
       // has already been detected (so detection keeps working via the
       // default throttled behavior), and back on when collapsing.
@@ -427,7 +427,7 @@ function createWidgetWindow(name, { forgetPosition = false } = {}) {
   // lives on an inactive Space makes macOS switch the user's ACTIVE SPACE to
   // reveal it — exactly the kind of disruptive, screen-stealing behavior the
   // occlusion-expanded banner is designed to never cause (see the
-  // window:set-occlusion-expanded comment below on staying click-through and
+  // tile reconciler comment below on staying click-through and
   // non-blocking). Do not reintroduce hide()/show() (or any focus/order-front
   // call) as a fix here without confirming live that it does NOT move the
   // user off their current Space. Turned out unnecessary anyway: the priming
@@ -682,153 +682,301 @@ ipcMain.on('window:set-expanded', (event, expanded, height) => {
 // display at once (their Spaces share a screen), filling each one's bounds
 // with the full workArea makes them stack exactly on top of each other.
 // The retired Swift widget avoided this via AppDelegate.mosaicTiles/
-// applyMosaicLayout (swift-widget-final tag, tray.swift) — ported below
-// verbatim (same tile counts/shapes, same 50ms debounce to batch widgets
-// that go occluded within the same Space-switch).
+// applyMosaicLayout (swift-widget-final tag, tray.swift); the tile shapes
+// below are ported from it, the decision of WHEN to grow is the tile
+// reconciler further down.
 /** @type {Set<BrowserWindow>} */
 const occlusionExpandedWindows = new Set();
 
-function mosaicTiles(count, workArea) {
+// Deterministic: the same group always gets the same layout. The Swift
+// original picked a random layout for 2 and 3 windows on every run, so a
+// re-layout of an unchanged group could reshuffle tiles — fine when it ran
+// once per Space switch, wrong for a reconciler that re-checks every tick.
+// `seed` (a hash of the group key) still varies the layout between Spaces.
+// Edges are rounded so every tile is whole pixels and they meet exactly.
+function mosaicTiles(count, workArea, seed = 0) {
   const { x: x0, y: y0, width: W, height: H } = workArea;
   if (count <= 0) return [];
+  const xs = (n) => Array.from({ length: n + 1 }, (_, i) => x0 + Math.round((W * i) / n));
+  const ys = (n) => Array.from({ length: n + 1 }, (_, i) => y0 + Math.round((H * i) / n));
+  const cell = (X, Y, c0, c1, r0, r1) => ({ x: X[c0], y: Y[r0], width: X[c1] - X[c0], height: Y[r1] - Y[r0] });
   if (count === 1) return [{ x: x0, y: y0, width: W, height: H }];
+  const X2 = xs(2);
+  const Y2 = ys(2);
   if (count === 2) {
-    return Math.random() < 0.5
-      ? [
-          { x: x0, y: y0, width: W / 2, height: H },
-          { x: x0 + W / 2, y: y0, width: W / 2, height: H },
-        ]
-      : [
-          { x: x0, y: y0, width: W, height: H / 2 },
-          { x: x0, y: y0 + H / 2, width: W, height: H / 2 },
-        ];
+    return seed % 2 === 0
+      ? [cell(X2, ys(1), 0, 1, 0, 1), cell(X2, ys(1), 1, 2, 0, 1)]
+      : [cell(xs(1), Y2, 0, 1, 0, 1), cell(xs(1), Y2, 0, 1, 1, 2)];
   }
   if (count === 3) {
+    const X1 = xs(1);
+    const Y1 = ys(1);
+    const X3 = xs(3);
     const layouts = [
-      [ // top full, bottom 2
-        { x: x0, y: y0, width: W, height: H / 2 },
-        { x: x0, y: y0 + H / 2, width: W / 2, height: H / 2 },
-        { x: x0 + W / 2, y: y0 + H / 2, width: W / 2, height: H / 2 },
-      ],
-      [ // top 2, bottom full
-        { x: x0, y: y0, width: W / 2, height: H / 2 },
-        { x: x0 + W / 2, y: y0, width: W / 2, height: H / 2 },
-        { x: x0, y: y0 + H / 2, width: W, height: H / 2 },
-      ],
-      [ // left full, right 2
-        { x: x0, y: y0, width: W / 2, height: H },
-        { x: x0 + W / 2, y: y0, width: W / 2, height: H / 2 },
-        { x: x0 + W / 2, y: y0 + H / 2, width: W / 2, height: H / 2 },
-      ],
-      [ // right full, left 2
-        { x: x0 + W / 2, y: y0, width: W / 2, height: H },
-        { x: x0, y: y0, width: W / 2, height: H / 2 },
-        { x: x0, y: y0 + H / 2, width: W / 2, height: H / 2 },
-      ],
-      [ // 3 columns
-        { x: x0, y: y0, width: W / 3, height: H },
-        { x: x0 + W / 3, y: y0, width: W / 3, height: H },
-        { x: x0 + (2 * W) / 3, y: y0, width: W / 3, height: H },
-      ],
+      [cell(X1, Y2, 0, 1, 0, 1), cell(X2, Y2, 0, 1, 1, 2), cell(X2, Y2, 1, 2, 1, 2)], // top full, bottom 2
+      [cell(X2, Y2, 0, 1, 0, 1), cell(X2, Y2, 1, 2, 0, 1), cell(X1, Y2, 0, 1, 1, 2)], // top 2, bottom full
+      [cell(X2, Y1, 0, 1, 0, 1), cell(X2, Y2, 1, 2, 0, 1), cell(X2, Y2, 1, 2, 1, 2)], // left full, right 2
+      [cell(X2, Y1, 1, 2, 0, 1), cell(X2, Y2, 0, 1, 0, 1), cell(X2, Y2, 0, 1, 1, 2)], // right full, left 2
+      [cell(X3, Y1, 0, 1, 0, 1), cell(X3, Y1, 1, 2, 0, 1), cell(X3, Y1, 2, 3, 0, 1)], // 3 columns
     ];
-    return layouts[Math.floor(Math.random() * layouts.length)];
+    return layouts[seed % layouts.length];
   }
   // 4+: 2 columns, as many rows as needed.
-  const cols = 2;
-  const rows = Math.ceil(count / cols);
-  const tW = W / cols;
-  const tH = H / rows;
+  const rows = Math.ceil(count / 2);
+  const Y = ys(rows);
   const tiles = [];
   for (let i = 0; i < count; i++) {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    tiles.push({ x: x0 + col * tW, y: y0 + row * tH, width: tW, height: tH });
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    tiles.push(cell(X2, Y, col, col + 1, row, row + 1));
   }
   return tiles;
 }
 
-let mosaicTimer = null;
-const mosaicPendingKeys = new Set();
+function seedFor(key) {
+  let h = 0;
+  for (const ch of String(key)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return h;
+}
 
-// 350ms, not the Swift original's 50ms: that version's mosaic trigger
-// (activeSpaceDidChangeNotification) fired once for every window in the
-// same tick, so 50ms was just a tiny safety margin. Here each widget is a
-// separate renderer with its OWN 400ms debounce before it even tells main
-// it's occluded (see widget.js), so sibling widgets going occluded together
-// (e.g. one Space switch) can still reach main.js tens to a couple hundred
-// ms apart. Too short a window here meant applyMosaicLayout ran once per
-// arrival — 1 window fills the screen, then gets abruptly re-tiled to
-// halves, then to thirds — instead of computing the final N-way layout once.
-const MOSAIC_BATCH_MS = 350;
+// ── tile reconciler: grow a widget to its mosaic tile when it is OFF-Space ──
+//
+// Why a widget grows at all: so Mission Control's thumbnail of each Space
+// shows that Space's agents big and legible — that is the only reason.
+//
+// What decides it: whether the widget sits on a Space that is NOT the one its
+// display is showing right now (lib/spaces.js, CGS). The old trigger was the
+// renderer's document.visibilitychange — Chromium's occlusion, which is the
+// same signal for "on another Space" and "covered by another app's window".
+// That caused two long-standing bugs:
+//   - a foreign window (Google Meet's floating one) covering a widget made it
+//     grow, growing changed what covered what, it shrank, got covered again —
+//     an endless grow/shrink fight (the newer window always "won");
+//   - each widget reported on its own lazy schedule and the mosaic batched
+//     whoever had reported in a 350ms window, so stragglers (or a widget whose
+//     report never came) were left out of the grid and stayed small.
+// Now main decides for every widget, on a heartbeat, from one snapshot:
+//   - covered on the CURRENT Space → stays compact, nothing to fight over;
+//   - the whole Space's group is tiled together, every tick, so a late widget
+//     joins its grid and a group that changes is re-laid out;
+//   - every tile is verified on the next tick (getBounds == target) and
+//     re-applied if macOS didn't take it.
+// When CGS can't say (non-macOS, private API gone), the renderer's visibility
+// report is the fallback signal — with a flap guard so an occlusion fight
+// latches compact instead of looping.
+//
+// Calm by design (no hurry: the grown face is only seen in Mission Control):
+// a change of mind must hold TILE_EXPAND_SETTLE_MS / TILE_COLLAPSE_SETTLE_MS
+// before acting, so a Space swipe back and forth or a Mission Control glance
+// never makes a widget pump. Audit: every transition and every miss goes to
+// session/widget.log ([tiles]), and the full current picture to
+// session/widget-tiles.json.
 
-// Group by (physical display, macOS Space) — NOT display alone. A Mac with
-// one monitor still has many Spaces (virtual desktops), and every widget
-// lives on its own Space by default (see the Space-memory comments near
-// createWidgetWindow). Grouping by display alone lumped EVERY occluded
-// widget on the machine into one giant grid (seen live: 13 agents squeezed
-// into a 2x7 grid covering the whole screen) even though each Space's own
-// Mission Control thumbnail only ever shows the widgets actually pinned to
-// THAT Space. spaces.getSpaceForWindow (see lib/spaces.js) reads the same
-// CGS Space id already used for Space-memory persistence; unsupported/
-// unknown falls back to a shared 'u' bucket per display (old behavior).
-function mosaicKeyFor(win) {
-  const displayId = screen.getDisplayMatching(win.getBounds()).id;
-  const spaceId = spaces.getSpaceForWindow(win);
+const TILE_TICK_MS = 1500;              // heartbeat
+const TILE_EXPAND_SETTLE_MS = 2500;     // off-Space this long before growing (unseen, so no rush)
+const TILE_COLLAPSE_SETTLE_MS = 1200;   // back on screen this long before shrinking
+const TILE_FLAP_WINDOW_MS = 60 * 1000;  // more than TILE_FLAP_MAX grows in this window...
+const TILE_FLAP_MAX = 4;
+const TILE_FLAP_LATCH_MS = 2 * 60 * 1000; // ...latches the widget compact this long
+const TILE_TOLERANCE_PX = 2;
+const TILE_MAX_RETRIES = 3;
+const TILES_STATUS_PATH = path.join(path.dirname(SESSION_LOG_PATH), 'widget-tiles.json');
+
+/** @type {WeakMap<BrowserWindow, object>} */
+const tileStates = new WeakMap();
+
+function tileStateOf(win) {
+  let st = tileStates.get(win);
+  if (!st) {
+    st = { want: false, since: 0, flips: [], latchedUntil: 0, retries: 0, reportedHidden: false, allowed: true, why: '', space: null, target: null };
+    tileStates.set(win, st);
+  }
+  return st;
+}
+
+// Group by (physical display, macOS Space) — NOT display alone: grouping by
+// display lumped every expanded widget on the machine into one giant grid
+// (seen live: 13 agents in a 2x7 grid) though each Space's thumbnail only
+// shows its own. Unknown Space falls back to a shared 'u' bucket per display.
+function mosaicKeyFor(win, spaceId = spaces.getSpaceForWindow(win)) {
+  const displayId = screen.getDisplayMatching(collapsedBounds.get(win) || win.getBounds()).id;
   return `${displayId}:${spaceId != null ? spaceId.toString() : 'u'}`;
 }
 
-function scheduleMosaicLayout(win) {
-  mosaicPendingKeys.add(mosaicKeyFor(win));
-  clearTimeout(mosaicTimer);
-  mosaicTimer = setTimeout(applyMosaicLayout, MOSAIC_BATCH_MS);
+/** Should this widget be grown right now, and why (for the audit). */
+function desiredTileState(win, st) {
+  if (!st.allowed) return { want: false, why: 'expandWhenHidden off', space: null, mode: 'pref' };
+  const space = spaces.getSpaceForWindow(win);
+  const current = space != null ? spaces.getCurrentSpaceForWindow(win) : null;
+  if (space != null && current != null) {
+    const off = space !== current;
+    return { want: off, why: off ? `off-Space (on ${space}, showing ${current})` : 'on the current Space', space, mode: 'space' };
+  }
+  return { want: st.reportedHidden, why: st.reportedHidden ? 'hidden (no Space info)' : 'visible (no Space info)', space, mode: 'visibility' };
 }
 
-function applyMosaicLayout() {
-  const keys = [...mosaicPendingKeys];
-  mosaicPendingKeys.clear();
-  for (const key of keys) {
-    const group = [...occlusionExpandedWindows].filter((w) => !w.isDestroyed() && mosaicKeyFor(w) === key);
-    if (group.length === 0) continue;
-    const display = screen.getDisplayMatching(group[0].getBounds());
+function expandToTile(win, st) {
+  collapsedBounds.set(win, win.getBounds());
+  occlusionExpandedWindows.add(win);
+  // Click-through: the grown face must never block typing into whatever is
+  // actually on screen.
+  win.setIgnoreMouseEvents(true, { forward: true });
+  // Let the banner paint while off-Space (throttling would freeze it compact).
+  win.webContents.setBackgroundThrottling(false);
+  win.webContents.send('window:occlusion-state', true);
+  st.retries = 0;
+  log.info('tiles', `${win.agentName}: grow — ${st.why}`);
+}
+
+function collapseFromTile(win, st) {
+  occlusionExpandedWindows.delete(win);
+  win.setIgnoreMouseEvents(false);
+  win.webContents.setBackgroundThrottling(true);
+  const prev = collapsedBounds.get(win);
+  if (prev) win.setBounds(prev);
+  win.webContents.send('window:occlusion-state', false);
+  st.target = null;
+  st.retries = 0;
+  log.info('tiles', `${win.agentName}: shrink — ${st.why}`);
+}
+
+function offTarget(bounds, target) {
+  return ['x', 'y', 'width', 'height'].some((k) => Math.abs(bounds[k] - target[k]) > TILE_TOLERANCE_PX);
+}
+
+/** Tile every grown widget, group by group, and verify the last tick's tiles landed. */
+function layoutGrownWidgets() {
+  const groups = new Map();
+  for (const win of occlusionExpandedWindows) {
+    if (win.isDestroyed()) continue;
+    const key = mosaicKeyFor(win, tileStateOf(win).space);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(win);
+  }
+  for (const [key, group] of groups) {
     group.sort((a, b) => (a.agentName || '').localeCompare(b.agentName || ''));
-    const tiles = mosaicTiles(group.length, display.workArea);
-    group.forEach((w, i) => w.setBounds(tiles[i]));
+    const display = screen.getDisplayMatching(collapsedBounds.get(group[0]) || group[0].getBounds());
+    const tiles = mosaicTiles(group.length, display.workArea, seedFor(key));
+    group.forEach((win, i) => {
+      const st = tileStateOf(win);
+      const target = tiles[i];
+      const bounds = win.getBounds();
+      if (!offTarget(bounds, target)) {
+        if (st.retries > 0) log.info('tiles', `${win.agentName}: on its tile after ${st.retries} retr${st.retries === 1 ? 'y' : 'ies'}`);
+        st.retries = 0;
+        st.target = target;
+        return;
+      }
+      const sameTarget = st.target && !offTarget(st.target, target);
+      if (sameTarget) {
+        // Set last tick and still not there: macOS didn't take it. Retry, loudly.
+        st.retries += 1;
+        if (st.retries <= TILE_MAX_RETRIES) {
+          log.warn('tiles', `${win.agentName}: not on its tile (${JSON.stringify(bounds)} ≠ ${JSON.stringify(target)}) — retry ${st.retries}/${TILE_MAX_RETRIES}`);
+        } else if (st.retries === TILE_MAX_RETRIES + 1) {
+          log.error('tiles', `${win.agentName}: still off its tile after ${TILE_MAX_RETRIES} retries — will keep re-applying quietly`);
+        }
+      } else {
+        log.info('tiles', `${win.agentName}: tile ${i + 1}/${group.length} on ${key} → ${JSON.stringify(target)}`);
+      }
+      st.target = target;
+      win.setBounds(target);
+    });
   }
 }
 
-ipcMain.on('window:set-occlusion-expanded', (event, expanded) => {
+let lastTilesStatus = '';
+let lastTilesStatusAt = 0;
+
+function writeTilesStatus(now) {
+  const widgets = [];
+  for (const [name, win] of windows) {
+    if (win.isDestroyed()) continue;
+    const st = tileStateOf(win);
+    const grown = occlusionExpandedWindows.has(win);
+    const bounds = win.getBounds();
+    widgets.push({
+      name,
+      space: st.space != null ? st.space.toString() : null,
+      grown,
+      want: st.want,
+      why: st.why,
+      onTile: grown ? Boolean(st.target) && !offTarget(bounds, st.target) : null,
+      retries: st.retries,
+      latched: st.latchedUntil > now,
+      bounds,
+      tile: grown ? st.target : null,
+    });
+  }
+  const body = JSON.stringify({ widgets }, null, 2);
+  if (body === lastTilesStatus && now - lastTilesStatusAt < 60 * 1000) return;
+  lastTilesStatus = body;
+  lastTilesStatusAt = now;
+  try {
+    fs.writeFileSync(TILES_STATUS_PATH, JSON.stringify({ updatedAt: new Date(now).toISOString(), widgets }, null, 2));
+  } catch {
+    // audit is best-effort
+  }
+}
+
+function reconcileTiles(now = Date.now()) {
+  let pending = false;
+  for (const win of windows.values()) {
+    if (win.isDestroyed() || !win.isVisible()) continue;
+    // A settings/commands panel is open: that mechanism owns the size.
+    if (expandedWindows.has(win)) continue;
+    const st = tileStateOf(win);
+    const d = desiredTileState(win, st);
+    st.why = d.why;
+    st.space = d.space;
+    if (d.want !== st.want) {
+      st.want = d.want;
+      st.since = now;
+    }
+    const grown = occlusionExpandedWindows.has(win);
+    if (st.want === grown) continue;
+    if (now - st.since < (st.want ? TILE_EXPAND_SETTLE_MS : TILE_COLLAPSE_SETTLE_MS)) {
+      pending = true;
+      continue;
+    }
+    if (st.want) {
+      if (now < st.latchedUntil) continue;
+      st.flips = st.flips.filter((t) => now - t < TILE_FLAP_WINDOW_MS);
+      if (st.flips.length >= TILE_FLAP_MAX) {
+        st.latchedUntil = now + TILE_FLAP_LATCH_MS;
+        log.warn('tiles', `${win.agentName}: grew ${st.flips.length}x in ${TILE_FLAP_WINDOW_MS / 1000}s (${d.mode}: ${d.why}) — staying compact for ${TILE_FLAP_LATCH_MS / 1000}s`);
+        continue;
+      }
+      st.flips.push(now);
+      expandToTile(win, st);
+    } else {
+      collapseFromTile(win, st);
+    }
+  }
+  layoutGrownWidgets();
+  writeTilesStatus(now);
+  if (pending) kickTiles(400);
+}
+
+let tilesKick = null;
+/** Run the reconciler soon (a renderer reported a visibility change, a Space likely switched). */
+function kickTiles(delay = 250) {
+  if (tilesKick) return;
+  tilesKick = setTimeout(() => {
+    tilesKick = null;
+    reconcileTiles();
+  }, delay);
+}
+
+// The renderer reports its visibility (and whether this agent wants to grow
+// at all). It no longer decides anything: main does, above.
+ipcMain.on('window:report-visibility', (event, hidden, allowed) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed()) return;
-  // Never fight with the settings/commands panel auto-expand above — if a
-  // panel is open, leave sizing to that mechanism.
-  if (expandedWindows.has(win)) return;
-
-  if (expanded && !occlusionExpandedWindows.has(win)) {
-    collapsedBounds.set(win, win.getBounds());
-    occlusionExpandedWindows.add(win);
-    win.setIgnoreMouseEvents(true, { forward: true });
-    // Occlusion (and therefore 'hidden') has already been detected at this
-    // point via the DEFAULT throttled behavior — safe to disable throttling
-    // now so the fullscreen banner actually paints while still off-Space,
-    // instead of only becoming visible once the user returns.
-    win.webContents.setBackgroundThrottling(false);
-    scheduleMosaicLayout(win);
-  } else if (!expanded && occlusionExpandedWindows.has(win)) {
-    occlusionExpandedWindows.delete(win);
-    win.setIgnoreMouseEvents(false);
-    win.webContents.setBackgroundThrottling(true);
-    const prev = collapsedBounds.get(win);
-    if (prev) win.setBounds(prev);
-    // Deliberately NOT re-tiling the remaining siblings here (no
-    // scheduleMosaicLayout call) — each widget restores on its own
-    // RESTORE_DELAY_MS timer (widget.js), so they rarely collapse in the
-    // same tick. Re-tiling survivors on every single collapse produced a
-    // visible two-step animation: a sibling about to restore would first
-    // jump to a bigger tile as the group shrank, then immediately collapse
-    // to its compact size a moment later. Leaving survivors at their
-    // existing tile until they too restore trades a briefly-oversized empty
-    // slot for a much smoother, single-step restore per widget.
-  }
+  const st = tileStateOf(win);
+  st.reportedHidden = Boolean(hidden);
+  st.allowed = allowed !== false;
+  kickTiles();
 });
 
 // ── face buttons: "Open" — a terminal, or the folder, at the agent's path ──
@@ -1415,17 +1563,19 @@ ipcMain.handle('tts:synthesize', async (event, text, voiceId, lang) => {
 // with a reason when it never played: muted, no voice, synthesis/playback
 // failure). Plain HTTP like every other backend call here. An unreachable
 // backend is not fatal — the drainer's own timeouts then pace the queue.
-ipcMain.handle('queue:ack', async (_event, id, phase, reason) => {
+ipcMain.handle('queue:ack', async (_event, id, phase, reason, durationMs) => {
   const tag = `speak ${String(id).slice(0, 8)}`;
   try {
     const res = await fetch(`${REGISTRY_URL}/queue/ack`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, phase, reason: reason || null }),
+      body: JSON.stringify({ id, phase, reason: reason || null, duration_ms: Number.isFinite(durationMs) ? durationMs : null }),
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
       log.warn('tts', `${tag} ack ${phase} failed: HTTP ${res.status}`);
+    } else if (json.known === false && phase === 'playing') {
+      log.warn('tts', `${tag} refused: its turn already ended — dropped instead of overlapping the current voice`);
     } else if (json.known === false) {
       log.warn('tts', `${tag} ack ${phase}: backend no longer tracks it (drainer timed out first?)`);
     } else {
@@ -1582,7 +1732,7 @@ app.whenReady().then(async () => {
   createTray({ registryUrl: REGISTRY_URL, onSelectAgent: openWidget, onQuit: () => app.quit() });
 
   // System sleep/wake: the occlusion-expand/mosaic feature (see
-  // window:set-occlusion-expanded below) drives off document.visibilitychange,
+  // the tile reconciler below) drives off document.visibilitychange,
   // which tracks real macOS window-occlusion notifications. Those go quiet for
   // the whole sleep duration, and a window that was already occluded going
   // into sleep gets no NEW occlusion notification on wake (same state as
@@ -1633,6 +1783,9 @@ app.whenReady().then(async () => {
   // setOcclusionExpanded's early-return) — so this is pure insurance, not a
   // replacement for the event-driven paths above.
   setInterval(resyncAllOcclusion, 5 * 60 * 1000);
+
+  // The tile reconciler's heartbeat (see "tile reconciler" above).
+  setInterval(() => reconcileTiles(), TILE_TICK_MS);
 
   const explicit = resolveInitialAgentNames(process.argv);
   if (explicit) {

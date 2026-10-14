@@ -50,6 +50,9 @@ function init() {
     const CGSMainConnectionID = sl.func('unsigned int CGSMainConnectionID()');
     const CGSCopySpacesForWindows = sl.func('void* CGSCopySpacesForWindows(unsigned int, int, void*)');
     const CGSMoveWindowsToManagedSpace = sl.func('void CGSMoveWindowsToManagedSpace(unsigned int, void*, unsigned long long)');
+    const CGSCopyManagedDisplayForWindow = sl.func('void* CGSCopyManagedDisplayForWindow(unsigned int, unsigned int)');
+    const CGSManagedDisplayGetCurrentSpace = sl.func('unsigned long long CGSManagedDisplayGetCurrentSpace(unsigned int, void*)');
+    const CFRelease = cf.func('void CFRelease(void*)');
 
     fns = {
       CFNumberCreate,
@@ -59,6 +62,9 @@ function init() {
       CFNumberGetValue,
       CGSCopySpacesForWindows,
       CGSMoveWindowsToManagedSpace,
+      CGSCopyManagedDisplayForWindow,
+      CGSManagedDisplayGetCurrentSpace,
+      CFRelease,
     };
     cid = CGSMainConnectionID();
   } catch (err) {
@@ -77,7 +83,17 @@ function makeSingleWindowIdArray(koffi, windowId) {
   const num = fns.CFNumberCreate(null, kCFNumberSInt32Type, buf);
   const ptrBuf = koffi.alloc('void*', 1);
   koffi.encode(ptrBuf, 'void*', num);
-  return fns.CFArrayCreate(null, ptrBuf, 1, null);
+  // Created with NULL callbacks: the array does not own `num`, so the caller
+  // releases both (releaseAll) — main.js's tile reconciler reads Spaces every
+  // couple of seconds for every widget, so a leak per call adds up.
+  return { arr: fns.CFArrayCreate(null, ptrBuf, 1, null), num };
+}
+
+function releaseAll(...refs) {
+  for (const ref of refs) {
+    if (!ref) continue;
+    try { fns.CFRelease(ref); } catch { /* ignore */ }
+  }
 }
 
 /**
@@ -108,10 +124,12 @@ function getSpaceForWindow(win) {
   if (!fns) return null;
   const wid = cgWindowId(win);
   if (wid == null) return null;
+  let ids = null;
+  let spacesRet = null;
   try {
     const koffi = require('koffi');
-    const arr = makeSingleWindowIdArray(koffi, wid);
-    const spacesRet = fns.CGSCopySpacesForWindows(cid, kCGSAllSpacesMask, arr);
+    ids = makeSingleWindowIdArray(koffi, wid);
+    spacesRet = fns.CGSCopySpacesForWindows(cid, kCGSAllSpacesMask, ids.arr);
     if (!spacesRet) return null;
     const count = fns.CFArrayGetCount(spacesRet);
     if (count < 1) return null;
@@ -122,6 +140,39 @@ function getSpaceForWindow(win) {
   } catch (err) {
     console.warn('[widget] spaces: getSpaceForWindow failed:', err);
     return null;
+  } finally {
+    releaseAll(spacesRet, ids && ids.arr, ids && ids.num);
+  }
+}
+
+/**
+ * The Space currently SHOWN on the display this window is on — with
+ * "Displays have separate Spaces" every display has its own. A widget is on
+ * screen iff getSpaceForWindow(win) equals this. (Read for the tile
+ * reconciler in main.js: being on a non-current Space, not merely being
+ * covered by another app's window, is what makes a widget grow.)
+ * @param {import('electron').BrowserWindow} win
+ * @returns {bigint|null}
+ */
+function getCurrentSpaceForWindow(win) {
+  if (!supported) return null;
+  init();
+  if (!fns) return null;
+  const wid = cgWindowId(win);
+  if (wid == null) return null;
+  let display = null;
+  try {
+    display = fns.CGSCopyManagedDisplayForWindow(cid, wid);
+    if (!display) return null;   // a null CFString would crash the next call
+    const space = fns.CGSManagedDisplayGetCurrentSpace(cid, display);
+    return space ? BigInt(space) : null;
+  } catch (err) {
+    console.warn('[widget] spaces: getCurrentSpaceForWindow failed:', err);
+    return null;
+  } finally {
+    if (display) {
+      try { fns.CFRelease(display); } catch { /* ignore */ }
+    }
   }
 }
 
@@ -139,11 +190,12 @@ function moveWindowToSpace(win, spaceId) {
   if (wid == null) return;
   try {
     const koffi = require('koffi');
-    const arr = makeSingleWindowIdArray(koffi, wid);
-    fns.CGSMoveWindowsToManagedSpace(cid, arr, spaceId);
+    const ids = makeSingleWindowIdArray(koffi, wid);
+    fns.CGSMoveWindowsToManagedSpace(cid, ids.arr, spaceId);
+    releaseAll(ids.arr, ids.num);
   } catch (err) {
     console.warn('[widget] spaces: moveWindowToSpace failed:', err);
   }
 }
 
-module.exports = { supported, getSpaceForWindow, moveWindowToSpace };
+module.exports = { supported, getSpaceForWindow, getCurrentSpaceForWindow, moveWindowToSpace };

@@ -88,10 +88,12 @@ def _wait_published(app_module, count, timeout=2.0):
     return app_module._published[count - 1][1]
 
 
-def _ack(client, speak_id, phase, reason=None):
+def _ack(client, speak_id, phase, reason=None, duration_ms=None):
     body = {"id": speak_id, "phase": phase}
     if reason:
         body["reason"] = reason
+    if duration_ms is not None:
+        body["duration_ms"] = duration_ms
     return client.post("/queue/ack", json=body)
 
 
@@ -163,24 +165,83 @@ def test_unclaimed_speak_is_dropped_after_the_pickup_grace(app_module, client):
 
 
 def test_stalled_widget_hits_the_per_clip_ceiling(app_module, client, monkeypatch):
-    """Claimed but never reported done (widget died mid-clip): the ceiling fires."""
-    monkeypatch.setattr(app_module, "SPEAK_SYNTH_HEADROOM_S", 0.2)
-    monkeypatch.setattr(app_module, "SPEAK_MAX_WAIT_S", 0.3)
+    """Playing but never reported done (widget died mid-clip): the ceiling fires."""
+    monkeypatch.setattr(app_module, "SPEAK_PLAY_SLACK_S", 0.2)
+    _enqueue(client, "A")
+    t = _drain_in_thread(app_module)
+    env = _wait_published(app_module, 1)
+    _ack(client, env["id"], "started")
+    assert _ack(client, env["id"], "playing", duration_ms=100).json()["known"] is True
+    t.join(timeout=2)
+    assert not t.is_alive(), "drainer must give up on a playing clip once its real duration + slack passes"
+    assert app_module._speak_acks == {}
+
+
+def test_speak_timeout_follows_the_real_duration_and_is_capped(app_module):
+    short = app_module._speak_timeout_for("Reporting: done. X.")
+    long = app_module._speak_timeout_for("x" * 5000)
+    assert short < long
+    assert long == app_module.SPEAK_MAX_WAIT_S
+    assert app_module._speak_timeout_for("x" * 5000, duration_s=4.0) == 4.0 + app_module.SPEAK_PLAY_SLACK_S, \
+        "the widget's measured duration beats the text estimate"
+
+
+# ── the speaker lock: a clip plays only during its own turn ────────────────────
+
+def test_slow_synthesis_keeps_the_turn_instead_of_releasing_the_next_voice(app_module, client, monkeypatch):
+    """Regression 2026-10-14: synthesis took 27-82s, the old text-length timeout
+    (~20s) released the next agent mid-synthesis, and four clips played at once.
+    Synthesis has its own budget now: the next agent waits."""
+    monkeypatch.setattr(app_module, "SPEAK_SYNTH_MAX_S", 5.0)
+    _enqueue(client, "A", "short")
+    _enqueue(client, "B", "short")
+    t = _drain_in_thread(app_module, times=2)
+    first = _wait_published(app_module, 1)
+    _ack(client, first["id"], "started")
+    time.sleep(1.0)   # well past the pickup grace, synthesis still running
+    assert len(app_module._published) == 1, "B must not start while A is still synthesizing"
+    assert _ack(client, first["id"], "playing", duration_ms=500).json()["known"] is True
+    _ack(client, first["id"], "done")
+    second = _wait_published(app_module, 2)
+    _ack(client, second["id"], "skipped", reason="muted")
+    t.join(timeout=2)
+    assert not t.is_alive()
+
+
+def test_a_clip_whose_turn_ended_is_refused_when_it_finally_wants_to_play(app_module, client, monkeypatch):
+    """When synthesis outlives its budget the turn moves on — and the late clip
+    must NOT play over the next one: its `playing` request is refused."""
+    monkeypatch.setattr(app_module, "SPEAK_SYNTH_MAX_S", 0.2)
     _enqueue(client, "A")
     t = _drain_in_thread(app_module)
     env = _wait_published(app_module, 1)
     _ack(client, env["id"], "started")
     t.join(timeout=2)
-    assert not t.is_alive(), "drainer must give up on a claimed clip once the ceiling passes"
-    assert app_module._speak_acks == {}
+    assert not t.is_alive(), "the synthesis budget releases the turn"
+    assert _ack(client, env["id"], "playing", duration_ms=1000).json() == {"ok": True, "known": False}, \
+        "late clip refused — the widget drops it instead of talking over the current turn"
 
 
-def test_speak_timeout_scales_with_text_length_and_is_capped(app_module):
-    short = app_module._speak_timeout_for("Reporting: done. X.")
-    long = app_module._speak_timeout_for("x" * 5000)
-    assert short < long
-    assert long == app_module.SPEAK_MAX_WAIT_S
-    assert short >= app_module.SPEAK_SYNTH_HEADROOM_S
+def test_a_grant_racing_the_synthesis_timeout_keeps_the_turn(app_module):
+    speak_id = "race"
+    import threading as _t
+    app_module._speak_acks[speak_id] = {"started": _t.Event(), "playing": _t.Event(), "done": _t.Event(),
+                                        "granted": False, "duration_s": None, "name": "A"}
+    assert app_module._ack_speak(speak_id, "playing", 1500) is True
+    assert app_module._retire_unless_granted(speak_id) is False, "granted in the same instant: the clip is playing, keep waiting for done"
+    assert app_module._speak_acks[speak_id]["duration_s"] == 1.5
+    app_module._speak_acks.pop(speak_id)
+
+
+def test_only_one_drainer_per_machine(app_module, tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "TTS_DRAINER_LOCK", tmp_path / "tts-drainer.lock")
+    first = app_module._acquire_drainer_lock()
+    assert first is not None
+    assert app_module._acquire_drainer_lock() is None, "a second backend process must not drain the same queue"
+    first.close()
+    again = app_module._acquire_drainer_lock()
+    assert again is not None, "the stand-by takes over once the holder is gone"
+    again.close()
 
 
 def test_failed_publish_does_not_wait(app_module, client, monkeypatch):

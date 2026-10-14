@@ -199,36 +199,48 @@ def _vortexia_poll_inbox(name: str, timeout: float = 2.0) -> list[dict]:
 # the widget that picks it up acks it back over POST /queue/ack in phases:
 #
 #   started — "a widget has this one" (sent on receipt, before synthesis)
+#   playing — "may I play it now?" sent after synthesis, right before the
+#             audio starts, with the clip's real duration. This is the
+#             speaker LOCK: it is granted (`known: true`) only while this id
+#             is still the drainer's current turn. A clip whose turn already
+#             ended — the drainer gave up on a slow synthesis — is refused
+#             and the widget drops it silently instead of talking over
+#             whoever holds the turn now.
 #   done    — playback finished
 #   skipped — muted / no voice / synthesis or playback failed: the speaker is
 #             free now, same as done
 #
 # _drain_one() publishes ONE envelope and then blocks until done/skipped
 # before it touches the next queue entry — that is the whole serialization.
-# Two safety valves keep one absent widget from stalling everyone else's
-# speech: if nobody claims the message within SPEAK_PICKUP_GRACE_S (widget
-# closed, a stale pre-handshake build, vortexia down) the drainer logs it
-# and moves on at once; and once claimed, a per-message ceiling scaled by
-# text length (capped at SPEAK_MAX_WAIT_S) covers a widget that died
-# mid-clip.
+# Each phase has its own budget, so one absent or broken widget can't stall
+# everyone else's speech: SPEAK_PICKUP_GRACE_S to be claimed at all,
+# SPEAK_SYNTH_MAX_S to get from claimed to playing (synthesis), and once
+# playing, the clip's own duration plus SPEAK_PLAY_SLACK_S.
 #
-# Before this handshake the loop popped and published as fast as it could,
-# so N agents reporting in the same second produced N overlapping voices —
-# the exact failure this queue exists to prevent (heard live 2026-09-28:
-# four clips synthesized within 2s, see session/widget.log).
+# History: before the handshake (2026-09-28) the loop published as fast as
+# it could and N reports in the same second were N overlapping voices. The
+# handshake then released a turn on a text-length estimate that also had to
+# cover synthesis (15s + len/12). On 2026-10-14 Kokoro, contended, took
+# 27-82s per clip; the drainer released four turns at ~20s each, each
+# release started ANOTHER synthesis, they all finished at 14:00:04 and all
+# four played at once (session/widget.log). Synthesis now has its own long
+# budget and a late clip can never play: it needs the `playing` grant.
 
 SPEAK_PICKUP_GRACE_S    = 2.0    # nobody claimed it → skip, don't stall the queue
-SPEAK_MAX_WAIT_S        = 180.0  # absolute ceiling per clip once claimed
-SPEAK_SYNTH_HEADROOM_S  = 15.0   # Kokoro synthesis usually 2–10s, occasionally far more
-SPEAK_SECONDS_PER_CHAR  = 1 / 12 # ~12 spoken chars per second
+SPEAK_SYNTH_MAX_S       = 120.0  # claimed → playing: Kokoro, one clip at a time, is 2–10s; contended far more
+SPEAK_MAX_WAIT_S        = 180.0  # absolute ceiling for the playback phase
+SPEAK_PLAY_SLACK_S      = 8.0    # playing → done: real duration + this
+SPEAK_SECONDS_PER_CHAR  = 1 / 12 # ~12 spoken chars per second, when the widget sends no duration
 SPEAK_GAP_S             = 0.3    # breath between two consecutive clips
 
 _speak_acks_lock = threading.Lock()
-_speak_acks: dict[str, dict] = {}   # speak id → {"started": Event, "done": Event, "name": str}
+_speak_acks: dict[str, dict] = {}   # speak id → {"started", "playing", "done": Event, "granted": bool, "duration_s", "name"}
 
 
-def _speak_timeout_for(text: str) -> float:
-    return min(SPEAK_MAX_WAIT_S, SPEAK_SYNTH_HEADROOM_S + len(text) * SPEAK_SECONDS_PER_CHAR)
+def _speak_timeout_for(text: str, duration_s: float | None = None) -> float:
+    """How long a clip that is PLAYING may take before the turn is released."""
+    spoken = duration_s if duration_s and duration_s > 0 else len(text) * SPEAK_SECONDS_PER_CHAR
+    return min(SPEAK_MAX_WAIT_S, spoken + SPEAK_PLAY_SLACK_S)
 
 
 def _pop_speak_request():
@@ -240,17 +252,35 @@ def _pop_speak_request():
     return msg
 
 
-def _ack_speak(speak_id: str, phase: str) -> bool:
+def _ack_speak(speak_id: str, phase: str, duration_ms: int | None = None) -> bool:
     """Record a widget's progress on one in-flight speak request. Returns
-    False when the id isn't being tracked (already timed out, or it came
-    from a previous backend process)."""
+    False when the id isn't the current turn (already timed out, or it came
+    from a previous backend process) — for `playing` that is a refusal: the
+    widget must not play it."""
     with _speak_acks_lock:
         pending = _speak_acks.get(speak_id)
-    if pending is None:
-        return False
-    pending["started"].set()
-    if phase != "started":   # done | skipped — either way the speaker is free
-        pending["done"].set()
+        if pending is None:
+            return False
+        pending["started"].set()
+        if phase == "playing":
+            pending["granted"] = True
+            if duration_ms:
+                pending["duration_s"] = duration_ms / 1000
+            pending["playing"].set()
+        elif phase != "started":   # done | skipped — either way the speaker is free
+            pending["playing"].set()
+            pending["done"].set()
+    return True
+
+
+def _retire_unless_granted(speak_id: str) -> bool:
+    """End this turn — unless the widget was granted `playing` in the same
+    instant (the grant and the timeout race under one lock). True = retired."""
+    with _speak_acks_lock:
+        pending = _speak_acks.get(speak_id)
+        if pending is not None and pending["granted"]:
+            return False
+        _speak_acks.pop(speak_id, None)
     return True
 
 
@@ -275,9 +305,12 @@ def _drain_one() -> bool:
         return True
 
     speak_id = uuid.uuid4().hex
-    pending = {"started": threading.Event(), "done": threading.Event(), "name": name}
+    tag = f"speak {speak_id[:8]} for {name!r}"
+    pending = {"started": threading.Event(), "playing": threading.Event(), "done": threading.Event(),
+               "granted": False, "duration_s": None, "name": name}
     with _speak_acks_lock:
         _speak_acks[speak_id] = pending
+    t0 = time.time()
     try:
         # Published to vortexia instead of shelling out to `say`: the Electron
         # widget running for `name` picks this up off las/speak, synthesizes
@@ -294,18 +327,19 @@ def _drain_one() -> bool:
         }
         if not _vortexia_publish(SPEAK_TOPIC, envelope):
             return True
-        if not pending["started"].wait(SPEAK_PICKUP_GRACE_S):
-            logger.warning(
-                f"[tts] no widget picked up speak {speak_id[:8]} for {name!r} "
-                f"within {SPEAK_PICKUP_GRACE_S}s — moving on"
-            )
+        if not pending["started"].wait(SPEAK_PICKUP_GRACE_S) and _retire_unless_granted(speak_id):
+            logger.warning(f"[tts] no widget picked up {tag} within {SPEAK_PICKUP_GRACE_S}s — moving on")
             return True
-        timeout = _speak_timeout_for(text)
+        if not pending["playing"].wait(SPEAK_SYNTH_MAX_S) and _retire_unless_granted(speak_id):
+            logger.warning(f"[tts] {tag} not ready to play after {SPEAK_SYNTH_MAX_S:.0f}s — "
+                           f"turn released; the clip will be refused if it ever arrives")
+            return True
+        t_play = time.time()
+        timeout = _speak_timeout_for(text, pending["duration_s"])
         if not pending["done"].wait(timeout):
-            logger.warning(
-                f"[tts] widget for {name!r} never reported speak {speak_id[:8]} "
-                f"done after {timeout:.0f}s — moving on"
-            )
+            logger.warning(f"[tts] {tag} never reported done {timeout:.0f}s into playback — moving on")
+        elif pending["granted"]:
+            logger.info(f"[tts] {tag}: ready in {t_play - t0:.1f}s, played {time.time() - t_play:.1f}s")
         time.sleep(SPEAK_GAP_S)
         return True
     finally:
@@ -313,7 +347,34 @@ def _drain_one() -> bool:
             _speak_acks.pop(speak_id, None)
 
 
+# ONE drainer per machine. The thread starts at import, so a second backend
+# process (a stray `backend/start.sh` next to launchd's — it has happened,
+# see docs/adr/0002) or a multi-worker uvicorn would run a second drainer on
+# the same queue file and two voices at once. An exclusive flock decides;
+# the loser keeps trying, so it takes over if the winner dies.
+TTS_DRAINER_LOCK = DATA_DIR / "tts-drainer.lock"
+
+
+def _acquire_drainer_lock():
+    import fcntl
+    TTS_DRAINER_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(TTS_DRAINER_LOCK, "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+    except OSError:
+        handle.close()
+        return None
+
+
 def tts_drainer():
+    lock = _acquire_drainer_lock()
+    if lock is None:
+        logger.warning(f"[tts] another backend process drains the speech queue ({TTS_DRAINER_LOCK}) — standing by")
+        while lock is None:
+            time.sleep(5)
+            lock = _acquire_drainer_lock()
+        logger.info("[tts] took over the speech queue")
     while True:
         try:
             busy = _drain_one()
@@ -363,8 +424,9 @@ class SpeakRequest(BaseModel):
 class SpeakAckRequest(BaseModel):
     """A widget reporting progress on one speak envelope — see _drain_one()."""
     id:     str = Field(min_length=1, max_length=64)
-    phase:  str = Field(pattern=r"^(started|done|skipped)$")
+    phase:  str = Field(pattern=r"^(started|playing|done|skipped)$")
     reason: Optional[str] = Field(default=None, max_length=200)
+    duration_ms: Optional[int] = Field(default=None, ge=0, le=3_600_000)   # with `playing`: the clip's real length
 
 
 class AttributionEntry(BaseModel):
@@ -993,10 +1055,13 @@ def enqueue_speak(req: SpeakRequest):
 
 @app.post("/queue/ack")
 def ack_speak(req: SpeakAckRequest):
-    """The widget playing a speak envelope reports `started`, then `done` (or
-    `skipped` with a reason). `known: false` means the drainer had already
-    given up on that id — harmless, the ack is just late."""
-    known = _ack_speak(req.id, req.phase)
+    """The widget playing a speak envelope reports `started`, asks `playing`
+    right before the audio starts, then reports `done` (or `skipped` with a
+    reason). `known: false` means that id is no longer the current turn:
+    harmless for the other phases, a refusal for `playing` (don't play)."""
+    known = _ack_speak(req.id, req.phase, req.duration_ms)
+    if req.phase == "playing" and not known:
+        logger.info(f"[tts] speak {req.id[:8]} refused: its turn already ended — not played over the current one")
     if req.phase == "skipped":
         logger.info(f"[tts] speak {req.id[:8]} skipped by widget: {req.reason or 'no reason given'}")
     return {"ok": True, "known": known}

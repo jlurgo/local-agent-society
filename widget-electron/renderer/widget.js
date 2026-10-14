@@ -287,6 +287,7 @@ function applyPrefsToDom() {
 async function init() {
   prefs = await window.las.getPrefs(agentName);
   applyPrefsToDom();
+  reportVisibility();   // tells main whether this agent may grow (expandWhenHidden)
   // The mic's target is the agent's own choice (its .las-agent.json), not a
   // window pref — see the children button section.
   refreshSessions().then(syncMicTargetSelect);
@@ -405,7 +406,7 @@ alwaysOnTopEl.addEventListener('change', () => persist({ alwaysOnTop: alwaysOnTo
 muteEl.addEventListener('change', () => persist({ mute: muteEl.checked }));
 expandWhenHiddenEl.addEventListener('change', () => {
   persist({ expandWhenHidden: expandWhenHiddenEl.checked });
-  if (!expandWhenHiddenEl.checked) setOcclusionExpanded(false);
+  reportVisibility();
 });
 micLanguageEl.addEventListener('change', () => persist({ micLanguage: micLanguageEl.value }));
 micTargetEl.addEventListener('change', () => setSessionsConfig({ target: micTargetEl.value }));
@@ -447,13 +448,19 @@ let visibilityDebounce = null;
 // on the way INTO occlusion below. Easy to tune: just this one constant.
 const RESTORE_DELAY_MS = 1000;
 
-function setOcclusionExpanded(expanded) {
+// Main decides whether this widget is grown (main.js "tile reconciler": by
+// macOS Space, not by occlusion) — the renderer only reports its visibility,
+// the fallback signal when the Space can't be read, and applies the face.
+function reportVisibility() {
+  window.las.reportVisibility(document.visibilityState === 'hidden', !!prefs.expandWhenHidden);
+}
+
+window.las.onOcclusionState((expanded) => {
   if (expanded === occlusionExpanded) return;
   occlusionExpanded = expanded;
-  window.las.setOcclusionExpanded(expanded);
   widgetEl.classList.toggle('occlusion-expanded', expanded);
   fitNameToBox();
-}
+});
 
 document.addEventListener('visibilitychange', () => {
   if (visibilityDebounce) clearTimeout(visibilityDebounce);
@@ -464,7 +471,7 @@ document.addEventListener('visibilitychange', () => {
   // you glance back at the Space.
   visibilityDebounce = setTimeout(() => {
     if (!prefs.expandWhenHidden) return;
-    setOcclusionExpanded(hidden);
+    reportVisibility();
   }, hidden ? 400 : RESTORE_DELAY_MS);
 });
 
@@ -476,8 +483,7 @@ document.addEventListener('visibilitychange', () => {
 // event that may never re-fire.
 window.las.onSystemResume(() => {
   if (visibilityDebounce) clearTimeout(visibilityDebounce);
-  if (!prefs.expandWhenHidden) return;
-  setOcclusionExpanded(document.visibilityState === 'hidden');
+  reportVisibility();
 });
 
 window.addEventListener('resize', () => fitNameToBox());
@@ -723,6 +729,42 @@ function ackSpeak(envelope, phase, reason) {
   window.las.ackSpeak(envelope.id, phase, reason).catch((err) => console.warn('[widget] ackSpeak failed', err));
 }
 
+// The speaker lock (backend/main.py, phase `playing`): right before the audio
+// starts, ask whether this clip's turn is still current. A clip whose
+// synthesis outlived the drainer's budget is refused — playing it then would
+// talk over whoever holds the turn now (four voices at once on 2026-10-14).
+// An unreachable backend fails open: there is no queue to respect then.
+async function mayPlay(envelope, durationMs) {
+  if (!envelope || !envelope.id) return true;
+  try {
+    const res = await window.las.ackSpeak(envelope.id, 'playing', null, durationMs);
+    return !(res && res.ok && res.known === false);
+  } catch (err) {
+    console.warn('[widget] speaker lock unreachable — playing anyway', err);
+    return true;
+  }
+}
+
+// las/speak is QoS1: a reconnect can redeliver an envelope already played.
+const seenSpeakIds = new Set();
+function firstTimeSeen(envelope) {
+  if (!envelope || !envelope.id) return true;
+  if (seenSpeakIds.has(envelope.id)) return false;
+  seenSpeakIds.add(envelope.id);
+  if (seenSpeakIds.size > 500) seenSpeakIds.delete(seenSpeakIds.values().next().value);
+  return true;
+}
+
+function audioDurationMs(audioEl) {
+  return new Promise((resolve) => {
+    const done = () => resolve(Number.isFinite(audioEl.duration) ? Math.round(audioEl.duration * 1000) : null);
+    if (audioEl.readyState >= 1) return done();
+    audioEl.addEventListener('loadedmetadata', done, { once: true });
+    audioEl.addEventListener('error', () => resolve(null), { once: true });
+    setTimeout(() => resolve(null), 2000);
+  });
+}
+
 // Local playback chain: even if two speak envelopes for THIS agent arrive
 // back to back (the backend gate already spaces them, but las/speak is an
 // open topic), they play one after the other, never on top of each other.
@@ -777,6 +819,18 @@ async function speak(text, envelope) {
   }
   const url = URL.createObjectURL(new Blob([result.wav], { type: 'audio/wav' }));
   const audioEl = new Audio(url);
+  if (!(await mayPlay(envelope, await audioDurationMs(audioEl)))) {
+    // Refused: its turn is over. Not played, not acked again — the backend
+    // already moved on and logged the refusal.
+    URL.revokeObjectURL(url);
+    console.warn('[widget] speak refused by the queue (turn already ended) — dropped, not played over the next voice');
+    return;
+  }
+  if (prefs.mute) {
+    URL.revokeObjectURL(url);
+    ackSpeak(envelope, 'skipped', 'muted');
+    return;
+  }
   await new Promise((resolve) => {
     let settled = false;
     const finish = (phase, reason) => {
@@ -828,6 +882,7 @@ window.las.onVortexiaMessage((envelope) => {
     return;
   }
   if (envelope && envelope.kind === 'speak') {
+    if (!firstTimeSeen(envelope)) return;
     appendLogEntry(envelope, { speak: true });
     // Claim it right away — the backend drainer only waits a short grace
     // period for SOMEONE to pick a clip up, then the long playback timeout.

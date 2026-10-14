@@ -597,12 +597,11 @@ test('window:set-expanded accepts an optional height override, falling back to E
 
 // ── expand when hidden (retired Swift "Expand on space change") ────────────
 
-test('main.js exposes window:set-occlusion-expanded, defers to panel-expand, and makes the window click-through', () => {
+test('growing makes the window click-through, shrinking restores the mouse; the panel-expand always wins', () => {
   const src = readSrc('main.js');
-  const body = extractFunctionBody(src, "ipcMain.on('window:set-occlusion-expanded', (event, expanded) => {");
-  assert.match(body, /expandedWindows\.has\(win\)/, 'must not fight with the settings/commands panel auto-expand');
-  assert.match(body, /setIgnoreMouseEvents\(true/, 'expanded state must be click-through, per the design constraint that it can never block typing');
-  assert.match(body, /setIgnoreMouseEvents\(false\)/, 'must restore normal mouse handling on collapse');
+  assert.match(extractFunctionBody(src, 'function expandToTile(win, st) {'), /setIgnoreMouseEvents\(true/, 'grown face must be click-through: it can never block typing');
+  assert.match(extractFunctionBody(src, 'function collapseFromTile(win, st) {'), /setIgnoreMouseEvents\(false\)/);
+  assert.match(extractFunctionBody(src, 'function reconcileTiles(now = Date.now()) {'), /expandedWindows\.has\(win\)/, 'must not fight the settings/commands panel');
 });
 
 test('expandWhenHidden defaults to true, per explicit request (was off by default, matching the retired Prefs.expandOnSpaceChange default, until changed)', () => {
@@ -749,13 +748,10 @@ test('backgroundThrottling is NOT disabled unconditionally at window creation �
   assert.doesNotMatch(body, /webPreferences:\s*\{[^}]*backgroundThrottling:\s*false/s);
 });
 
-test('window:set-occlusion-expanded toggles backgroundThrottling dynamically: off only once already expanded, back on when collapsing', () => {
+test('backgroundThrottling goes off only while grown (so the banner paints off-Space) and back on when shrinking', () => {
   const src = readSrc('main.js');
-  const body = extractFunctionBody(src, "ipcMain.on('window:set-occlusion-expanded', (event, expanded) => {");
-  const offIdx = body.indexOf('setBackgroundThrottling(false)');
-  const onIdx = body.indexOf('setBackgroundThrottling(true)');
-  assert.notEqual(offIdx, -1, 'expected setBackgroundThrottling(false) once occlusion is already detected, so the fullscreen banner actually paints while off-Space');
-  assert.notEqual(onIdx, -1, 'expected setBackgroundThrottling(true) on collapse, restoring normal detection for the next cycle');
+  assert.match(extractFunctionBody(src, 'function expandToTile(win, st) {'), /setBackgroundThrottling\(false\)/);
+  assert.match(extractFunctionBody(src, 'function collapseFromTile(win, st) {'), /setBackgroundThrottling\(true\)/);
 });
 
 // ── mosaic tiling for multiple occlusion-expanded widgets on one display ───
@@ -764,31 +760,16 @@ test('window:set-occlusion-expanded toggles backgroundThrottling dynamically: of
 // several widgets going occlusion-expanded on the same screen at once just
 // stack exactly on top of each other instead of tiling.
 
-test('window:set-occlusion-expanded schedules a mosaic re-layout on expand (not a direct full-workArea setBounds), but NOT on collapse', () => {
-  const src = readSrc('main.js');
-  const body = extractFunctionBody(src, "ipcMain.on('window:set-occlusion-expanded', (event, expanded) => {");
-  const collapseIdx = body.indexOf('} else if');
-  const expandBranch = body.slice(0, collapseIdx);
-  const collapseBranch = body.slice(collapseIdx);
-  assert.match(expandBranch, /scheduleMosaicLayout\(/, 'expand branch must schedule a mosaic layout instead of unconditionally filling the whole display');
-  assert.doesNotMatch(
-    collapseBranch,
-    /scheduleMosaicLayout\(/,
-    'collapse must NOT re-tile remaining siblings — that produced a visible two-step animation (jump to a bigger tile, then immediately collapse); survivors keep their tile until they too restore'
-  );
-});
-
 test('mosaic grouping key is (display, macOS Space), not display alone — every widget on the machine sharing one physical display must not be lumped into a single giant grid', () => {
   const src = readSrc('main.js');
-  const body = extractFunctionBody(src, 'function mosaicKeyFor(win) {');
-  assert.match(body, /spaces\.getSpaceForWindow\(win\)/);
+  const body = extractFunctionBody(src, 'function mosaicKeyFor(win, spaceId = spaces.getSpaceForWindow(win)) {');
   assert.match(body, /`\$\{displayId\}:\$\{spaceId/, 'key must combine displayId with spaceId, not displayId alone');
 });
 
 test('mosaicTiles returns the full work area for 0 or 1 windows, and non-overlapping tiles otherwise', () => {
   const src = readSrc('main.js');
-  const body = extractFunctionBody(src, 'function mosaicTiles(count, workArea) {');
-  const fn = new Function(`function mosaicTiles(count, workArea) ${body} return mosaicTiles;`)();
+  const body = extractFunctionBody(src, 'function mosaicTiles(count, workArea, seed = 0) {');
+  const fn = new Function(`function mosaicTiles(count, workArea, seed = 0) ${body} return mosaicTiles;`)();
   const area = { x: 0, y: 0, width: 1000, height: 800 };
 
   assert.deepEqual(fn(0, area), []);
@@ -813,6 +794,155 @@ test('mosaicTiles returns the full work area for 0 or 1 windows, and non-overlap
       assert.ok(t.y + t.height <= area.y + area.height + 0.01, `tile overflows height for count=${count}`);
     }
   }
+});
+
+test('mosaicTiles is deterministic per seed and uses whole pixels that meet exactly', () => {
+  const src = readSrc('main.js');
+  const body = extractFunctionBody(src, 'function mosaicTiles(count, workArea, seed = 0) {');
+  const fn = new Function(`function mosaicTiles(count, workArea, seed = 0) ${body} return mosaicTiles;`)();
+  const area = { x: 0, y: 25, width: 1511, height: 957 };
+  for (const count of [2, 3, 4, 5, 7]) {
+    for (const seed of [0, 1, 2, 3, 4, 17]) {
+      assert.deepEqual(fn(count, area, seed), fn(count, area, seed), 'same group, same layout — a re-layout never reshuffles');
+      for (const t of fn(count, area, seed)) {
+        for (const k of ['x', 'y', 'width', 'height']) assert.ok(Number.isInteger(t[k]), `fractional ${k} for count=${count}`);
+      }
+    }
+  }
+});
+
+// ── the tile reconciler, run for real against fake windows and Spaces ──────
+// The section of main.js from mosaicTiles to the face buttons is evaluated
+// with stand-ins for Electron (windows, screen, ipcMain), lib/spaces.js and
+// the log, so the decisions below are the shipped code's, not a re-statement.
+
+function loadReconciler() {
+  const src = readSrc('main.js');
+  const start = src.indexOf('function mosaicTiles(count, workArea, seed = 0) {');
+  const end = src.indexOf('// ── face buttons: "Open"');
+  const section = src.slice(start, end);
+  const env = {
+    windows: new Map(),
+    spaceOf: new Map(),        // win -> space id (bigint) or null
+    current: 1n,               // the Space the display shows
+    logs: [],
+    occlusionExpandedWindows: new Set(),
+    collapsedBounds: new WeakMap(),
+    expandedWindows: new WeakSet(),
+  };
+  const spaces = {
+    getSpaceForWindow: (w) => (env.spaceOf.has(w) ? env.spaceOf.get(w) : null),
+    getCurrentSpaceForWindow: () => env.current,
+  };
+  const screen = { getDisplayMatching: () => ({ id: 1, workArea: { x: 0, y: 0, width: 1000, height: 800 } }) };
+  const log = { info: (c, m) => env.logs.push(['info', m]), warn: (c, m) => env.logs.push(['warn', m]), error: (c, m) => env.logs.push(['error', m]) };
+  const ipcMain = { on: () => {} };
+  const fakeFs = { writeFileSync: () => {} };
+  const make = new Function(
+    'windows', 'spaces', 'screen', 'log', 'ipcMain', 'BrowserWindow', 'fs', 'path', 'SESSION_LOG_PATH',
+    'occlusionExpandedWindows', 'collapsedBounds', 'expandedWindows', 'setTimeout',
+    `${section}\nreturn { reconcileTiles, tileStateOf, mosaicTiles, TILE_EXPAND_SETTLE_MS, TILE_COLLAPSE_SETTLE_MS, TILE_FLAP_MAX };`
+  );
+  const api = make(env.windows, spaces, screen, log, ipcMain, {}, fakeFs, path, '/tmp/widget.log',
+    env.occlusionExpandedWindows, env.collapsedBounds, env.expandedWindows, () => 0);
+  env.add = (name, space, { stubborn = false } = {}) => {
+    let bounds = { x: 10, y: 10, width: 200, height: 120 };
+    const win = {
+      agentName: name,
+      isDestroyed: () => false,
+      isVisible: () => true,
+      getBounds: () => ({ ...bounds }),
+      setBounds: (b) => { if (!stubborn) bounds = { ...b }; },
+      setIgnoreMouseEvents: () => {},
+      webContents: { setBackgroundThrottling: () => {}, send: () => {} },
+    };
+    env.windows.set(name, win);
+    env.spaceOf.set(win, space);
+    return win;
+  };
+  return { ...api, env };
+}
+
+/** Run the reconciler across `ms` of fake time in heartbeat steps. */
+function runFor(r, fromMs, ms, step = 500) {
+  let t = fromMs;
+  for (; t <= fromMs + ms; t += step) r.reconcileTiles(t);
+  return t;
+}
+
+test('reconciler: a widget covered by another app on the CURRENT Space never grows (no Meet fight)', () => {
+  const r = loadReconciler();
+  const win = r.env.add('Wavi', 1n);                // on the Space being shown
+  r.tileStateOf(win).reportedHidden = true;          // Chromium says "occluded" — Meet's window on top
+  runFor(r, 0, 60 * 1000);
+  assert.equal(r.env.occlusionExpandedWindows.has(win), false, 'covered on screen must stay compact');
+  assert.equal(r.env.logs.filter(([, m]) => /grow|shrink/.test(m)).length, 0, 'not a single grow/shrink');
+});
+
+test('reconciler: every widget of an off-Space group gets its tile — late ones join the grid', () => {
+  const r = loadReconciler();
+  const a = r.env.add('bau', 2n);
+  const b = r.env.add('coach', 2n);
+  let t = runFor(r, 0, 5000);
+  assert.ok(r.env.occlusionExpandedWindows.has(a) && r.env.occlusionExpandedWindows.has(b));
+  assert.equal(a.getBounds().width * a.getBounds().height, 1000 * 800 / 2, 'two widgets: each a half of the screen (the seed picks the split)');
+  // two more widgets show up on that Space later (stragglers)
+  const c = r.env.add('billing', 2n);
+  const d = r.env.add('dev-simulator', 2n);
+  t = runFor(r, t, 5000);
+  for (const w of [a, b, c, d]) {
+    const bb = w.getBounds();
+    assert.deepEqual([bb.width, bb.height], [500, 400], `${w.agentName} must fill its quarter of the screen, not stay small`);
+  }
+  const tiles = [a, b, c, d].map((w) => JSON.stringify(w.getBounds()));
+  assert.equal(new Set(tiles).size, 4, 'four distinct tiles, no stacking');
+});
+
+test('reconciler: a quick swipe away and back (shorter than the settle time) changes nothing', () => {
+  const r = loadReconciler();
+  const win = r.env.add('Pulpo', 1n);
+  runFor(r, 0, 3000);
+  r.env.current = 9n;                                       // swipe to another Space...
+  runFor(r, 3500, r.TILE_EXPAND_SETTLE_MS - 1000);
+  r.env.current = 1n;                                       // ...and straight back
+  runFor(r, 3500 + r.TILE_EXPAND_SETTLE_MS, 10 * 1000);
+  assert.equal(r.env.logs.filter(([, m]) => /grow|shrink/.test(m)).length, 0, 'no grow/shrink pump on a glance');
+});
+
+test('reconciler: grows after the settle time off-Space, shrinks after coming back', () => {
+  const r = loadReconciler();
+  const win = r.env.add('DataLake', 1n);
+  r.env.current = 5n;
+  let t = runFor(r, 0, r.TILE_EXPAND_SETTLE_MS + 1000);
+  assert.ok(r.env.occlusionExpandedWindows.has(win));
+  assert.deepEqual(win.getBounds(), { x: 0, y: 0, width: 1000, height: 800 }, 'alone on its Space: the full work area');
+  r.env.current = 1n;
+  runFor(r, t, r.TILE_COLLAPSE_SETTLE_MS + 1000);
+  assert.ok(!r.env.occlusionExpandedWindows.has(win));
+  assert.deepEqual(win.getBounds(), { x: 10, y: 10, width: 200, height: 120 }, 'back to its compact place');
+});
+
+test('reconciler: a tile macOS does not apply is retried and reported in the log (audit)', () => {
+  const r = loadReconciler();
+  const win = r.env.add('Luganense', 2n, { stubborn: true });
+  runFor(r, 0, 10 * 1000);
+  assert.ok(r.env.logs.some(([lvl, m]) => lvl === 'warn' && /not on its tile/.test(m)), 'a miss is logged');
+  assert.ok(r.env.logs.some(([lvl, m]) => lvl === 'error' && /still off its tile/.test(m)), 'a persistent miss escalates once');
+});
+
+test('reconciler: without Space info, an occlusion fight latches compact instead of pumping forever', () => {
+  const r = loadReconciler();
+  const win = r.env.add('Monkey', null);                  // CGS unavailable → visibility fallback
+  const st = r.tileStateOf(win);
+  let t = 0;
+  let grows = 0;
+  for (let i = 0; i < 20; i++) {                           // grow makes it visible, shrink makes it hidden...
+    st.reportedHidden = !r.env.occlusionExpandedWindows.has(win);
+    t = runFor(r, t, 4000);
+  }
+  grows = r.env.logs.filter(([, m]) => /: grow/.test(m)).length;
+  assert.ok(grows <= r.TILE_FLAP_MAX, `grew ${grows} times in a fight — must latch after ${r.TILE_FLAP_MAX}`);
+  assert.ok(r.env.logs.some(([lvl, m]) => lvl === 'warn' && /staying compact/.test(m)), 'the latch is logged');
 });
 
 // ── reopen (`las widget`) forgets saved position, keeps color/prefs ────────
@@ -1339,7 +1469,23 @@ test('session-targeted messages show in the log (viewer subscription to the sess
 
 test('preload.js exposes ackSpeak for the speak-queue handshake', () => {
   const src = readSrc('preload.js');
-  assert.match(src, /ackSpeak:\s*\(id,\s*phase,\s*reason\)\s*=>\s*ipcRenderer\.invoke\('queue:ack',\s*id,\s*phase,\s*reason\)/);
+  assert.match(src, /ackSpeak:\s*\(id,\s*phase,\s*reason,\s*durationMs\)\s*=>\s*ipcRenderer\.invoke\('queue:ack',\s*id,\s*phase,\s*reason,\s*durationMs\)/);
+});
+
+test('renderer asks the speaker lock before playing and drops a refused clip (2026-10-14: four voices at once)', () => {
+  const src = readSrc('renderer/widget.js');
+  const body = extractFunctionBody(src, 'async function speak(');
+  const gate = body.indexOf('mayPlay(envelope');
+  assert.ok(gate > 0, 'speak() must ask mayPlay before playing');
+  assert.ok(gate < body.indexOf('audioEl.play()'), 'the lock is asked BEFORE the audio starts');
+  const mayPlay = extractFunctionBody(src, 'async function mayPlay(');
+  assert.match(mayPlay, /'playing'/);
+  assert.match(mayPlay, /known === false/, 'a refusal (known:false) means: do not play');
+});
+
+test('renderer plays a redelivered speak envelope (same id) only once', () => {
+  const src = readSrc('renderer/widget.js');
+  assert.match(src, /if \(!firstTimeSeen\(envelope\)\) return;/);
 });
 
 test('main.js forwards queue:ack to the backend as POST /queue/ack', () => {
