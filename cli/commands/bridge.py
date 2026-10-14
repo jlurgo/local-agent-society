@@ -47,6 +47,7 @@ import click
 from cli import api
 from cli.commands import complete_agent_names
 from cli.commands._agent_common import _agent_name_from_cwd, resolve_agent_name
+from cli import terminal
 
 REPO = Path(__file__).resolve().parents[2]
 BRIDGE_BIN = REPO / "bridge" / "bin" / "las-bridge.js"
@@ -314,11 +315,11 @@ def read_statuses(name: str) -> list:
 def read_status(name: str) -> dict | None:
     """THIS session's bridge (found by process ancestry, like `las agent title`) when there is
     one; otherwise the only live bridge, or an armed one, so a plain terminal still gets an answer."""
-    from cli.commands.agents import _ancestor_pids, own_session
+    from cli.commands.agents import find_own_session
     statuses = read_statuses(name)
     if not statuses:
         return None
-    mine = own_session(statuses, _ancestor_pids()) if len(statuses) > 1 else statuses[0]
+    mine = find_own_session(statuses) if len(statuses) > 1 else statuses[0]
     if mine:
         return mine
     return next((s for s in statuses if s.get("armed")), statuses[0])
@@ -524,6 +525,27 @@ def _run_in_pty_with_bridge(name: str, argv: list, runtime: str, cwd: str, inter
             bridge.kill()
 
 
+# The terminal window is a signpost like the widget (SKILL.md §10): "Agent ·
+# runtime" at launch, "Agent · runtime — title" once `las agent title` runs.
+# Claude Code rewrites the window title with its own conversation summaries,
+# which is exactly the "reabrir codex-…" José kept seeing instead of the
+# agent; its documented switch is this variable (it also stops Claude's
+# background session-naming request — `las claude --resume` lists first
+# prompts instead of summaries). LAS_TERMINAL_TITLE=0 keeps Claude's titles.
+CLAUDE_TITLE_SWITCH = "CLAUDE_CODE_DISABLE_TERMINAL_TITLE"
+
+
+def las_owns_terminal_title() -> bool:
+    return os.environ.get("LAS_TERMINAL_TITLE", "1") != "0"
+
+
+def _sign_terminal(name: str | None, runtime: str) -> None:
+    """Title the real terminal with the agent and runtime before the TUI takes it over."""
+    fd = terminal.stdout_fd()
+    if name and fd is not None and las_owns_terminal_title():
+        terminal.set_terminal_title(terminal.session_title_text(name, "", runtime), fd=fd)
+
+
 def _launch_claude(args, no_widget=False, account=None, pty=None):
     """`pty`: None = channel, unless this account's org is known to block channels;
     True = type mailbox messages into Claude's prompt (like `las codex`); False = channel, always."""
@@ -539,6 +561,9 @@ def _launch_claude(args, no_widget=False, account=None, pty=None):
     name = _agent_name_from_cwd()
     _chain(name, widget=not no_widget)
     runtime = claude_runtime()
+    if name and las_owns_terminal_title():
+        os.environ[CLAUDE_TITLE_SWITCH] = "1"
+    _sign_terminal(name, runtime)
     if pty is None and name and channels_blocked(claude_config_dir()):
         click.echo(f"{runtime}: this account's organization blocks Claude Code channels — "
                    f"delivering by typing into the prompt instead (`--channel` to try the channel again).", err=True)
@@ -662,6 +687,12 @@ CODEX_ARGV = ["codex", "--yolo"]
 # out of habit must not pass it twice — codex refuses a repeated
 # --dangerously-bypass-approvals-and-sandbox and exits before opening.
 CODEX_YOLO_FLAGS = {"--yolo", "--dangerously-bypass-approvals-and-sandbox"}
+# Codex's TUI titles the window itself (OSC 0: a spinner, the thread name, the
+# project — codex-rs/tui/src/terminal_title.rs), which is what showed instead
+# of the agent. `tui.terminal_title = []` is its documented off switch; passed
+# per launch so ~/.codex/config.toml stays the human's (`codex doctor -c
+# 'tui.terminal_title=[]'` reports "title disabled"). LAS_TERMINAL_TITLE=0 keeps it.
+CODEX_TITLE_OFF = ["-c", "tui.terminal_title=[]"]
 # The headless alternative (`--exec`): one `codex exec` per message, text on
 # stdin, answer sent back to the sender. --yolo there too: nobody is at the
 # keyboard to approve anything in a run driven by the mailbox.
@@ -729,7 +760,9 @@ def run_codex_interactive(name: str, agent_dir: str, codex_args=(), intercept_ur
     agent's mailbox as a `codex` session and every JSON line it prints is typed
     into the TUI. Returns Codex's exit code; the bridge dies with it."""
     extra = [a for a in codex_args if a not in CODEX_YOLO_FLAGS]
-    return _run_in_pty_with_bridge(name, [*CODEX_ARGV, *with_codex_cd(extra, agent_dir)], "codex", agent_dir, intercept_url, port,
+    _sign_terminal(name, "codex")
+    title_off = CODEX_TITLE_OFF if las_owns_terminal_title() else []
+    return _run_in_pty_with_bridge(name, [*CODEX_ARGV, *title_off, *with_codex_cd(extra, agent_dir)], "codex", agent_dir, intercept_url, port,
                                    hold_until_submit=codex_opens_picker(extra), resume_command="las codex")
 
 
@@ -772,5 +805,6 @@ def shell_cmd(name, yes, run_all, no_widget, intercept_url, port):
     """Connect a plain terminal (no AI) to LAS here: messages print, commands run after a y/N, output goes back to the sender."""
     name = resolve_agent_name(name)
     _chain(name, widget=not no_widget)
+    _sign_terminal(name, "shell")
     extra = (["--yes"] if yes else []) + (["--all"] if run_all else [])
     _exec(bridge_argv("shell", name, _common(extra, intercept_url, port)))

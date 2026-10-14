@@ -137,13 +137,14 @@ def test_status_reports_this_sessions_bridge_when_two_claude_sessions_are_open(m
     other = os.getppid()  # alive, but not "mine" for this test
     (tmp_path / "bridge-Robo@claude-1-aa.json").write_text(json.dumps({"agent": "Robo", "sink": "claude-channel", "pid": other, "runtime": "claude", "armed": False}))
     (tmp_path / "bridge-Robo@claudeRelay-2-bb.json").write_text(json.dumps({"agent": "Robo", "sink": "claude-channel", "pid": me, "runtime": "claudeRelay", "armed": True, "delivered": 2}))
-    import cli.commands.agents as agents_mod
-    monkeypatch.setattr(agents_mod, "_ancestor_pids", lambda pid=None: {me})
+    from cli import terminal
+    monkeypatch.setattr(terminal, "ancestors", lambda pid=None: [(me, "claude")])
+    monkeypatch.delenv("CLAUDECODE", raising=False)
     result = CliRunner().invoke(cli, ["bridge", "status", "Robo"])
     assert result.exit_code == 0, result.output
     assert "(claudeRelay)" in result.output and "2 delivered" in result.output
 
-    monkeypatch.setattr(agents_mod, "_ancestor_pids", lambda pid=None: set())
+    monkeypatch.setattr(terminal, "ancestors", lambda pid=None: [])
     result = CliRunner().invoke(cli, ["bridge", "status", "Robo"])
     assert result.exit_code == 0, "from a plain terminal: an armed one answers"
 

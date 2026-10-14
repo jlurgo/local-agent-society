@@ -26,14 +26,34 @@ def _agent_name_from_cwd():
     return None
 
 
+def _loose(name: str) -> str:
+    """`Team Knowledge`, `team-knowledge`, `teamknowledge`: one agent."""
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def canonical_agent_name(name: str, registered) -> str:
+    """The registry's spelling of `name` — exact first, then case/punctuation
+    insensitive (an agent named after its folder gets typed as the folder).
+    Unknown names come back unchanged: the caller's error says what it was
+    looking for, as before."""
+    if name in registered:
+        return name
+    matches = [r for r in registered if _loose(r) == _loose(name)]
+    return matches[0] if len(matches) == 1 else name
+
+
 def resolve_agent_name(name, *, err: bool = False) -> str:
-    """Return `name` if given, else infer it from the agent config in the cwd.
+    """Return `name` (in the registry's spelling) if given, else infer it from
+    the agent config in the cwd.
 
     On failure, echoes the standard error message (matching prior per-command
     behavior) and raises SystemExit(1).
     """
     if name:
-        return name
+        try:
+            return canonical_agent_name(name, api.get("/agents"))
+        except SystemExit:   # backend unreachable: api.get already said so; keep the name typed
+            return name
     resolved = _agent_name_from_cwd()
     if resolved:
         return resolved

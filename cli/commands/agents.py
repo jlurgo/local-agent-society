@@ -14,6 +14,7 @@ from cli.agent_config import (TARGET_ALL, TARGET_DEFAULT, TITLE_SOFT_CAP, Broken
                               read_agent_config, write_agent_config)
 from cli.path_utils import AGENT_CONFIG_FILENAME, agent_config_path
 from cli.hierarchy import tree_lines
+from cli import terminal
 
 
 @click.group()
@@ -713,36 +714,55 @@ def _print_sessions(name: str, view: dict) -> None:
 
 
 def _parent_pid(pid: int) -> int | None:
-    try:
-        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True, timeout=2).stdout.strip()
-        return int(out) if out else None
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
+    return terminal.parent_and_comm(pid)[0]
 
 
-def _ancestor_pids(pid: int | None = None) -> set:
-    """This process's ancestors (itself excluded, launchd/init excluded)."""
-    seen, pid = set(), _parent_pid(pid or os.getpid())
-    while pid and pid > 1 and pid not in seen:
-        seen.add(pid)
-        pid = _parent_pid(pid)
-    return seen
+def own_session(sessions: list, ancestors: set, runtime: str | None = None, cwd: str | None = None) -> dict | None:
+    """The session this command runs inside.
 
+    By process ancestry first: a session's bridge is either an ancestor
+    itself (`las shell` runs commands as its children) or the sibling of
+    one — Claude Code starts the channel bridge as its own child, `las codex`
+    starts the bridge next to Codex — so the bridge's parent is an ancestor
+    of anything the model runs. The nearest match wins.
 
-def own_session(sessions: list, ancestors: set) -> dict | None:
-    """The session this command runs inside, found by process ancestry.
-
-    A session's bridge is either an ancestor itself (`las shell` runs
-    commands as its children) or the sibling of one: Claude Code starts the
-    channel bridge as its own child, and `las codex` starts the bridge next
-    to Codex — so the bridge's parent (Claude, or the `las codex` process)
-    is an ancestor of anything the model runs. The nearest match wins.
+    Then by runtime + working directory: Codex runs commands through its
+    app-server daemon (cli/terminal.py), where no `las` process is an
+    ancestor at all. The daemon keeps the TUI's cwd, so the one session of
+    this runtime registered for this directory is it; failing that, the one
+    session of this runtime. Two candidates stay ambiguous: ask for --session.
     """
     for s in sessions:
         if s.get("pid") in ancestors:
             return s
     matches = [s for s in sessions if _parent_pid(s.get("pid") or 0) in ancestors]
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) == 1:
+        return matches[0]
+    if not runtime:
+        return None
+    same_runtime = [s for s in sessions if s.get("runtime") == runtime]
+    here = [s for s in same_runtime if cwd and os.path.realpath(s.get("cwd") or "") == os.path.realpath(cwd)]
+    for candidates in (here, same_runtime):
+        if len(candidates) == 1:
+            return candidates[0]
+    return None
+
+
+def find_own_session(sessions: list) -> dict | None:
+    """own_session() for the process running this command."""
+    tree = terminal.ancestors()
+    return own_session(sessions, {pid for pid, _ in tree}, terminal.runtime_hint([comm for _, comm in tree]), os.getcwd())
+
+
+def _show_terminal_title(name: str, session: dict, title: str) -> str:
+    """Put the title on the session's terminal window too (its bridge holds the
+    same controlling tty as the TUI: Claude's child, or `las codex`'s). Returns
+    the line to print about it."""
+    text = terminal.session_title_text(name, title, session.get("runtime"))
+    tty = terminal.tty_of_pid(session.get("pid"))
+    if terminal.set_terminal_title(text, tty=tty):
+        return f"terminal {tty}: \"{text}\""
+    return "terminal: no tty for this session — title shown in the widget only"
 
 
 @agent.command("title")
@@ -761,22 +781,30 @@ def title(title, name, sid):
     a soft target, never truncated). The widget's refresh button asks every
     intelligent session to run this; a session may also set it on its own at
     start or whenever its work changes. A shell cannot describe itself.
+
+    The same title goes on the session's terminal window ("Agent · runtime — title"),
+    so the terminal is a signpost like the widget. Claude Code would overwrite
+    it with its own summaries; `las claude` turns that off (LAS_TERMINAL_TITLE=0
+    keeps Claude's).
     """
     name = resolve_agent_name(name)
     view = api.get(f"/agents/{quote(name, safe='')}/sessions")
     if title is None:
         _print_sessions(name, view)
         return
-    if not sid:
-        mine = own_session(view.get("sessions", []), _ancestor_pids())
-        if not mine:
+    sessions = view.get("sessions", [])
+    mine = next((s for s in sessions if s["sid"] == sid), None) if sid else find_own_session(sessions)
+    if not mine:
+        if sid:
+            click.echo(f"{name}: no connected session {sid!r} (see `las agent sessions`).", err=True)
+        else:
             click.echo(f"{name}: can't tell which session this is — pass --session (see `las agent sessions`).", err=True)
-            raise SystemExit(1)
-        sid = mine["sid"]
-    view = api.put(f"/agents/{quote(name, safe='')}/sessions/{quote(sid, safe='')}/title", {"title": title})
+        raise SystemExit(1)
+    view = api.put(f"/agents/{quote(name, safe='')}/sessions/{quote(mine['sid'], safe='')}/title", {"title": title})
     if len(title) > TITLE_SOFT_CAP:
         click.echo(f"note: {len(title)} chars — aim for about {TITLE_SOFT_CAP}.", err=True)
     _print_sessions(name, view)
+    click.echo(_show_terminal_title(name, mine, title))
 
 
 @agent.command("target")

@@ -82,6 +82,16 @@ def test_skill_tells_sessions_to_title_themselves_and_answer_a_title_request_sil
     assert 'no reply, no TTS, no closing report' in SKILL
 
 
+def test_skill_names_how_each_runtime_finds_its_own_session_and_owns_the_window_title():
+    """2026-10-14: `las agent title` failed inside Codex (its daemon runs the commands) and the
+    window still showed Codex's own title. The skill must say why per runtime, not hand-wave."""
+    assert "app-server daemon" in SKILL and "working directory" in SKILL
+    assert "CLAUDECODE" in SKILL
+    assert "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1" in SKILL and "tui.terminal_title=[]" in SKILL
+    assert "LAS_TERMINAL_TITLE=0" in SKILL
+    assert "case and punctuation don't count" in SKILL
+
+
 def test_skill_teaches_the_society_map_and_the_recipient_note():
     assert "las agent sessions --all" in SKILL
     assert "--refresh" in SKILL

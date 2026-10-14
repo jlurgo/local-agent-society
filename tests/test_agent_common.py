@@ -27,6 +27,25 @@ def test_resolve_agent_name_returns_explicit_name_without_touching_cwd(monkeypat
     assert _agent_common.resolve_agent_name("explicit-name") == "explicit-name"
 
 
+def test_resolve_agent_name_uses_the_registrys_spelling(monkeypatch):
+    """`las agent sessions team-knowledge` answered "no connected sessions" for an
+    agent registered as "Team Knowledge" (2026-10-14): the folder name is what
+    people type. Case and punctuation don't count; an unknown name stays as typed."""
+    monkeypatch.setattr(_agent_common.api, "get", lambda path: {"Team Knowledge": {}, "Robo": {}, "robo-two": {}})
+    assert _agent_common.resolve_agent_name("team-knowledge") == "Team Knowledge"
+    assert _agent_common.resolve_agent_name("TEAMKNOWLEDGE") == "Team Knowledge"
+    assert _agent_common.resolve_agent_name("Robo") == "Robo"
+    assert _agent_common.resolve_agent_name("nobody") == "nobody"
+    assert _agent_common.canonical_agent_name("robotwo", ["robo-two", "Robo Two"]) == "robotwo"   # two matches: no guess
+
+
+def test_resolve_agent_name_keeps_the_name_when_the_backend_is_down(monkeypatch):
+    def down(path):
+        raise SystemExit(1)
+    monkeypatch.setattr(_agent_common.api, "get", down)
+    assert _agent_common.resolve_agent_name("team-knowledge") == "team-knowledge"
+
+
 def test_resolve_agent_name_falls_back_to_cwd(monkeypatch, tmp_path):
     """With no explicit name, it resolves from .las-agent.json in the cwd."""
     (tmp_path / ".las-agent.json").write_text(json.dumps({"name": "cwd-agent"}))

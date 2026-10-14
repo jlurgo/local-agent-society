@@ -134,7 +134,7 @@ def test_target_shows_the_agents_choice_and_the_connected_sessions(monkeypatch):
     out = CliRunner().invoke(cli, ["agent", "target", "--name", "Robo"]).output
     assert "messages go to session 'shell'" in out and "cc to the last-used session" in out
     assert "[not intelligent: commands only]" in out
-    assert patches == [] and gets == ["/agents/Robo/sessions"]
+    assert patches == [] and [g for g in gets if g != "/agents"] == ["/agents/Robo/sessions"]
 
 
 def test_target_sets_target_and_cc_through_the_config_patch(monkeypatch):

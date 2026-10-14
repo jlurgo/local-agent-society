@@ -184,6 +184,34 @@ def test_las_claude_chains_mcp_registration_presence_and_widget_then_execs(monke
     assert calls == [["claude", bridge_mod.CLAUDE_CHANNEL_FLAG, bridge_mod.CLAUDE_CHANNEL_SERVER, "--resume"]]
 
 
+def test_launchers_sign_the_terminal_and_las_claude_owns_the_window_title(monkeypatch, tmp_path):
+    """The window says "Agent · runtime" from the first second (SKILL.md §10); Claude Code's
+    own summaries would overwrite it, so its documented switch goes into the environment —
+    unless LAS_TERMINAL_TITLE=0 asks to keep Claude's titles."""
+    from cli import terminal
+    titles = []
+    monkeypatch.setattr(terminal, "stdout_fd", lambda: 1)   # the runner's stdout is no terminal; pretend
+    monkeypatch.setattr(terminal, "set_terminal_title", lambda text, tty=None, fd=None: (titles.append(text), True)[1])
+    calls, *_ = _chain_spies(monkeypatch, tmp_path)
+    monkeypatch.delenv(bridge_mod.CLAUDE_TITLE_SWITCH, raising=False)
+    monkeypatch.delenv("LAS_TERMINAL_TITLE", raising=False)
+    seen_env = []
+    monkeypatch.setattr(bridge_mod, "_exec", lambda argv: seen_env.append(os.environ.get(bridge_mod.CLAUDE_TITLE_SWITCH)))
+    assert CliRunner().invoke(cli, ["claude"]).exit_code == 0
+    assert titles == ["Robo · claude"] and seen_env == ["1"]
+
+    monkeypatch.setenv("LAS_TERMINAL_TITLE", "0")
+    monkeypatch.delenv(bridge_mod.CLAUDE_TITLE_SWITCH, raising=False)
+    titles.clear(); seen_env.clear()
+    assert CliRunner().invoke(cli, ["claude"]).exit_code == 0
+    assert titles == [] and seen_env == [None], "opted out: Claude keeps its own titles"
+
+    monkeypatch.delenv("LAS_TERMINAL_TITLE", raising=False)
+    monkeypatch.setattr(bridge_mod, "_run_in_pty_with_bridge", lambda *a, **k: 0)
+    assert bridge_mod.run_codex_interactive("Robo", "/r") == 0
+    assert titles == ["Robo · codex"]
+
+
 def test_las_claude_outside_an_agent_folder_skips_the_chain_but_still_passes_the_flag(monkeypatch, tmp_path):
     calls, config, posts, opened = _chain_spies(monkeypatch, tmp_path, agent=None)
     assert CliRunner().invoke(cli, ["claude"]).exit_code == 0
@@ -250,15 +278,22 @@ def test_run_codex_interactive_wires_a_codex_session_bridge_into_the_pty(monkeyp
     monkeypatch.setattr(bridge_mod, "_node", lambda: "/usr/local/bin/node")
     from cli import pty_session
     monkeypatch.setattr(pty_session, "run_in_pty", lambda argv, **kw: (ptys.append((argv, kw["cwd"])), 7)[1])
+    monkeypatch.delenv("LAS_TERMINAL_TITLE", raising=False)
     code = bridge_mod.run_codex_interactive("Robo", "/r", ("--model", "m"))
     assert code == 7
     assert popens == [["/usr/local/bin/node", str(bridge_mod.BRIDGE_BIN), "stdout", "--agent", "Robo", "--runtime", "codex", "--quiet"]]
-    assert ptys == [(["codex", "--yolo", "-C", "/r", "--model", "m"], "/r")]
+    assert ptys == [(["codex", "--yolo", "-c", "tui.terminal_title=[]", "-C", "/r", "--model", "m"], "/r")], \
+        "Codex's own window title is off: the terminal shows the agent (SKILL.md §10)"
 
     # `las codex --yolo` (or the long spelling) must not hand codex the flag twice.
     ptys.clear()
     bridge_mod.run_codex_interactive("Robo", "/r", ("--yolo", "resume", "--dangerously-bypass-approvals-and-sandbox"))
-    assert ptys == [(["codex", "--yolo", "resume", "-C", "/r"], "/r")]
+    assert ptys == [(["codex", "--yolo", "-c", "tui.terminal_title=[]", "resume", "-C", "/r"], "/r")]
+
+    ptys.clear()
+    monkeypatch.setenv("LAS_TERMINAL_TITLE", "0")
+    bridge_mod.run_codex_interactive("Robo", "/r", ())
+    assert ptys == [(["codex", "--yolo", "-C", "/r"], "/r")], "opted out: Codex keeps its own title"
 
 
 def test_las_codex_names_the_directory_explicitly_so_resume_never_returns_to_a_stale_path():
