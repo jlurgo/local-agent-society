@@ -495,7 +495,7 @@ def channels_blocked(config_dir: Path | None) -> bool:
     return False
 
 
-def _run_in_pty_with_bridge(name: str, argv: list, runtime: str, cwd: str, intercept_url=None, port=None) -> int:
+def _run_in_pty_with_bridge(name: str, argv: list, runtime: str, cwd: str, intercept_url=None, port=None, hold_until_submit=False) -> int:
     """A TUI in front, a `stdout` bridge behind it registered as `runtime`: every JSON
     line the bridge prints is typed into the TUI (cli/pty_session.py). Returns the
     TUI's exit code; the bridge dies with it."""
@@ -505,7 +505,7 @@ def _run_in_pty_with_bridge(name: str, argv: list, runtime: str, cwd: str, inter
         stdout=subprocess.PIPE, stdin=subprocess.DEVNULL,
     )
     try:
-        return pty_session.run_in_pty(argv, inject_fd=bridge.stdout.fileno(), cwd=cwd)
+        return pty_session.run_in_pty(argv, inject_fd=bridge.stdout.fileno(), cwd=cwd, hold_until_submit=hold_until_submit)
     finally:
         bridge.terminate()
         try:
@@ -682,12 +682,42 @@ def with_codex_cd(args: list, cwd: str) -> list:
     return ["-C", cwd, *args]
 
 
+# Options of `codex resume`/`fork` that take a value — so a value is never
+# mistaken for the session id.
+CODEX_VALUE_OPTIONS = {"-C", "--cd", "-c", "--config", "--enable", "--disable", "--remote", "-m", "--model",
+                       "-p", "--profile", "-s", "--sandbox", "-a", "--ask-for-approval", "-i", "--image", "--add-dir"}
+
+
+def codex_opens_picker(args: list) -> bool:
+    """`resume`/`fork` with neither a session id nor --last opens Codex's session
+    picker. A mailbox message typed there (paste + Enter) would pick a session —
+    on 2026-10-14 a dev-relay-brain Codex ended up attached to Team Knowledge's
+    conversation, so every notice to one showed up in the other."""
+    if not args or args[0] not in CODEX_CD_SUBCOMMANDS:
+        return False
+    rest = args[1:]
+    if "--last" in rest:
+        return False
+    skip = False
+    for a in rest:
+        if skip:
+            skip = False
+            continue
+        if a in CODEX_VALUE_OPTIONS:
+            skip = True
+            continue
+        if not a.startswith("-"):
+            return False  # a session id (or name)
+    return True
+
+
 def run_codex_interactive(name: str, agent_dir: str, codex_args=(), intercept_url=None, port=None) -> int:
     """Codex's TUI in front, the bridge behind: `las-bridge stdout` consumes this
     agent's mailbox as a `codex` session and every JSON line it prints is typed
     into the TUI. Returns Codex's exit code; the bridge dies with it."""
     extra = [a for a in codex_args if a not in CODEX_YOLO_FLAGS]
-    return _run_in_pty_with_bridge(name, [*CODEX_ARGV, *with_codex_cd(extra, agent_dir)], "codex", agent_dir, intercept_url, port)
+    return _run_in_pty_with_bridge(name, [*CODEX_ARGV, *with_codex_cd(extra, agent_dir)], "codex", agent_dir, intercept_url, port,
+                                   hold_until_submit=codex_opens_picker(extra))
 
 
 @click.command("codex", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})

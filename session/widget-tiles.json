@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-10-14T14:34:51.406Z",
+  "updatedAt": "2026-10-14T14:40:38.810Z",
   "widgets": [
     {
       "name": "DataLake",
@@ -167,8 +167,8 @@
       "bounds": {
         "x": 684,
         "y": 628,
-        "width": 300,
-        "height": 160
+        "width": 431,
+        "height": 297
       },
       "tile": null
     },

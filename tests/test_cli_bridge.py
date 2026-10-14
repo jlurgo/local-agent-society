@@ -349,3 +349,12 @@ def _plain_claude_on_path(monkeypatch):
     """Assertions name `claude`; which native install this machine has is not what these tests check."""
     from cli.commands import bridge as _bridge
     monkeypatch.setattr(_bridge, "claude_bin", lambda: "claude")
+
+
+def test_codex_session_picker_is_detected_so_messages_never_choose_a_session():
+    picker = bridge_mod.codex_opens_picker
+    assert picker(["resume"]) and picker(["fork"]) and picker(["resume", "-C", "/x", "--all"])
+    assert not picker(["resume", "--last"])
+    assert not picker(["resume", "01a131b1-b4ec"]), "a session id: no picker"
+    assert not picker(["resume", "-C", "/x", "01a131b1"]), "an option's value is not the id, the id still is"
+    assert not picker([]) and not picker(["fix the tests"])

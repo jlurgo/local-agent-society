@@ -70,6 +70,7 @@ class DraftTracker:
     def __init__(self):
         self.chars = 0
         self.last_key = 0.0
+        self.submitted = False  # the human pressed Enter at least once
         self._esc = False      # inside an escape sequence (arrows, bracketed-paste markers)
         self._csi = False
 
@@ -89,6 +90,8 @@ class DraftTracker:
                 self._esc = True
             elif b in (0x0D, 0x0A, 0x03, 0x15):  # Enter submits; Ctrl-C / Ctrl-U clear
                 self.chars = 0
+                if b in (0x0D, 0x0A):
+                    self.submitted = True
             elif b in (0x7F, 0x08):  # backspace
                 self.chars = max(0, self.chars - 1)
             elif b >= 0x20 and not (0x80 <= b <= 0xBF):  # printable; skip UTF-8 continuation bytes
@@ -102,9 +105,13 @@ class DraftTracker:
 
 
 def run_in_pty(argv, *, inject_fd=None, stdin_fd=None, stdout_fd=None, on_inject=None, cwd=None, env=None,
-               quiet: float = 1.5, max_hold: float = 120.0) -> int:
+               quiet: float = 1.5, max_hold: float = 120.0, hold_until_submit: bool = False) -> int:
     """Run `argv` in a PTY, forwarding stdin/stdout, typing each JSON line read
     from `inject_fd` (the bridge's stdout) into it. Returns the child's exit code.
+
+    `hold_until_submit`: the TUI opens on a picker (`codex resume` with no
+    session id) — a paste + Enter there would CHOOSE a session, not send a
+    message. Hold every message until the human has pressed Enter once.
 
     `stdin_fd`/`stdout_fd` default to the real terminal; tests pass pipes."""
     stdin_fd = sys.stdin.fileno() if stdin_fd is None else stdin_fd
@@ -165,7 +172,7 @@ def run_in_pty(argv, *, inject_fd=None, stdin_fd=None, stdout_fd=None, on_inject
                     except (ValueError, UnicodeDecodeError):
                         continue
                     held.append(on_inject(envelope))
-            while held and not draft.busy(time.monotonic(), quiet, max_hold):
+            while held and (draft.submitted or not hold_until_submit) and not draft.busy(time.monotonic(), quiet, max_hold):
                 type_into(master_fd, held.pop(0))
     finally:
         if saved is not None:

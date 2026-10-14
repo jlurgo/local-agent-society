@@ -78,3 +78,27 @@ def test_a_message_arriving_mid_typing_waits_for_the_submit():
     assert code == 0
     assert "a=half typed|" in output, "the message didn't splice into the human's line"
     assert "b=" in output and "[LAS message from Robo] ping" in output
+
+
+def test_on_a_picker_messages_wait_until_the_human_has_chosen():
+    """`codex resume` with no id opens a session picker: a message typed there
+    would pick a session. With hold_until_submit nothing is typed before the
+    human's first Enter — then it goes in as usual."""
+    inject_r, inject_w = os.pipe()
+    stdin_r, stdin_w = os.pipe()
+    out_r, out_w = os.pipe()
+    argv = ["/bin/sh", "-c", 'read -r a; read -r b; printf "a=%s|b=%s\\n" "$a" "$b"']
+    os.write(inject_w, (json.dumps({"from": "Robo", "source": "agent", "text": "ping"}) + "\n").encode())
+    os.close(inject_w)
+    import threading, time
+    def choose():
+        time.sleep(0.6)            # the human looks at the picker, quiet for longer than `quiet`
+        os.write(stdin_w, b"2\r")  # ...and picks
+        os.close(stdin_w)
+    threading.Thread(target=choose).start()
+    code = pty_session.run_in_pty(argv, inject_fd=inject_r, stdin_fd=stdin_r, stdout_fd=out_w, quiet=0.1, hold_until_submit=True)
+    os.close(out_w)
+    output = os.read(out_r, 65536).decode()
+    assert code == 0
+    assert "a=2|" in output, "the picker got the human's choice, not the message"
+    assert "a=2|b=\x1b[200~[LAS message from Robo] ping" in output, "the message went in (as a paste) right after the choice"
