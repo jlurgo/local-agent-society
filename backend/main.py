@@ -299,7 +299,7 @@ def _drain_one() -> bool:
     voice = msg.get("voice", "Samantha")
     text  = msg.get("text", "")
     if voice not in NICE_VOICE_NAMES:
-        print(f"[tts] skipping unknown voice {voice!r} for {name!r}", flush=True)
+        logger.warning(f"[tts] skipping unknown voice {voice!r} for {name!r}")
         return True
     if not text:
         return True

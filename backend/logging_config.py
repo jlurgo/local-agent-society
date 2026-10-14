@@ -5,15 +5,20 @@ src/logger.js (see ../../vortexia/src/logger.js) so both halves of the
 unbounded backend.log.
 
 Call setup_logging() once, as early as possible in main.py's import order.
+
+LAS_BACKEND_LOG_DIR overrides the log directory. The test suite sets it
+(tests/conftest.py) so an in-process TestClient never writes its fake
+agents' warnings into the production backend/logs/backend.log.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
-LOG_DIR = Path(__file__).resolve().parent / "logs"
+LOG_DIR = Path(os.environ.get("LAS_BACKEND_LOG_DIR") or Path(__file__).resolve().parent / "logs")
 LOG_FILE = LOG_DIR / "backend.log"
 RETENTION_DAYS = 7
 

@@ -2,11 +2,21 @@
 Pytest plugin — updates docs/boarding.html with test results after each run.
 Results are embedded as JSON inside <script id="las-test-results"> so the
 HTML works as a static file:// with no network requests needed.
+
+Also keeps the suite out of the production log: backend/logging_config.py
+opens backend/logs/backend.log at import, and every test that imports
+backend.main would otherwise leave its fake agents' TTS warnings there for
+an operator to misread. The override must be in place before that first
+import, hence at conftest import time.
 """
 import json
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
+
+os.environ.setdefault("LAS_BACKEND_LOG_DIR", tempfile.mkdtemp(prefix="las-backend-test-logs-"))
 
 BOARDING_HTML = Path(__file__).parent.parent / "docs" / "boarding.html"
 _MARKER = re.compile(

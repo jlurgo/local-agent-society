@@ -40,7 +40,9 @@ Both processes get an app-level daily-rotating log, independent of the OS:
   log the cause before exiting — a supervisor can only restart a process
   that actually exits.
 - backend: `backend/logging_config.py` — same 7-day contract via Python's
-  `TimedRotatingFileHandler`, writing `logs/backend.log`. The existing
+  `TimedRotatingFileHandler`, writing `logs/backend.log` (or
+  `$LAS_BACKEND_LOG_DIR/backend.log` — the test suite sets it so a
+  TestClient never writes into the production log). The existing
   vortexia-connectivity warnings in `main.py` now go through this logger
   instead of bare `print()`.
 

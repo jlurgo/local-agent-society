@@ -38,4 +38,6 @@ uv.lock
 
 # Bridge runtime state (docs/adr/0004) and its dependencies
 session/bridge-*.json
+# Tile reconciler's current picture (widget-electron/main.js) — rewritten every heartbeat
+session/widget-tiles.json
 bridge/node_modules/
