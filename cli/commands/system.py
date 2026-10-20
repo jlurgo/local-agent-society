@@ -8,12 +8,12 @@ from cli import api
 REPO = Path(__file__).parent.parent.parent
 
 
-def _run_script(name):
+def _run_script(name, *args):
     script = REPO / name
     if not script.exists():
         click.echo(f"Error: {script} not found.")
         sys.exit(1)
-    subprocess.run(["bash", str(script)], check=False)
+    subprocess.run(["bash", str(script), *args], check=False)
 
 
 @click.command()
@@ -52,9 +52,10 @@ def stop_cmd():
 
 
 @click.command("restart")
-def restart_cmd():
-    """Restart the backend + widget, warning with beeps only if a mic dictation is actually in progress."""
-    _run_script("restart-widget.sh")
+@click.option("--force", is_flag=True, help="Restart even while a mic dictation is recording.")
+def restart_cmd(force):
+    """Restart the backend + widget — if a mic dictation is recording, beep and wait for it to end first."""
+    _run_script("restart-widget.sh", *(["--force"] if force else []))
 
 
 @click.command()

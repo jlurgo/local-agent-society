@@ -287,3 +287,46 @@ def test_ack_for_unknown_id_is_harmless(client):
 ])
 def test_ack_validates_its_input(client, body):
     assert client.post("/queue/ack", json=body).status_code == 422
+
+
+# ── the mic hold: nothing speaks over a dictation ────────────────────────────
+#
+# 2026-10-20: LAS voices played over the user's dictation, contaminating the
+# audio — and a long dictation may be impossible to repeat. While a widget
+# records, the queue is held: no new turn, the clip in flight pauses in its
+# widget and its budgets stop counting, nothing is dropped.
+
+def test_a_held_queue_starts_no_turn_and_keeps_every_request(app_module, client):
+    _enqueue(client, "A")
+    assert client.post("/queue/hold", json={"holding": True}).json()["held"] is True
+    assert app_module._drain_one() is False
+    assert app_module._published == [] and len(client.get("/queue").json()) == 1, "held, not dropped"
+    assert client.post("/queue/hold", json={"holding": False}).json()["held"] is False
+    t = _drain_in_thread(app_module)
+    env = _wait_published(app_module, 1)
+    _ack(client, env["id"], "skipped", reason="test")
+    t.join(timeout=2)
+
+
+def test_the_hold_freezes_the_budget_of_the_clip_in_flight(app_module, client, monkeypatch):
+    monkeypatch.setattr(app_module, "SPEAK_PLAY_SLACK_S", 0.2)
+    _enqueue(client, "A")
+    t = _drain_in_thread(app_module)
+    env = _wait_published(app_module, 1)
+    _ack(client, env["id"], "started")
+    assert _ack(client, env["id"], "playing", duration_ms=10).json()["known"] is True
+    client.post("/queue/hold", json={"holding": True})   # the user starts dictating mid-clip
+    time.sleep(0.8)
+    assert t.is_alive(), "the paused clip keeps its turn while the mic holds the queue"
+    client.post("/queue/hold", json={"holding": False})
+    _ack(client, env["id"], "done")
+    t.join(timeout=2)
+    assert not t.is_alive()
+
+
+def test_an_unrenewed_hold_lapses_so_a_crashed_widget_cannot_silence_everyone(app_module, client, monkeypatch):
+    monkeypatch.setattr(app_module, "MIC_HOLD_TTL_S", 0.1)
+    client.post("/queue/hold", json={"holding": True})
+    assert app_module._mic_held()
+    time.sleep(0.2)
+    assert not app_module._mic_held()

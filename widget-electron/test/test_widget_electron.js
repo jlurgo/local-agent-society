@@ -1558,7 +1558,7 @@ test('children rows carry each session\'s title; the menu\'s refresh asks the in
   const ipc = extractFunctionBody(readSrc('main.js'), "ipcMain.handle('agent:request-session-titles', async (_event, name) => {");
   assert.match(ipc, /\/sessions\/titles\/request`/);
   assert.match(ipc, /postBackend\(/);
-  assert.match(extractFunctionBody(readSrc('main.js'), 'async function postBackend(urlPath, what)'), /method: 'POST'/);
+  assert.match(extractFunctionBody(readSrc('main.js'), 'async function postBackend(urlPath, what, body)'), /method: 'POST'/);
   assert.match(src, /envelope\.kind === 'title-request'/, 'the request itself never shows in the log');
 });
 
@@ -1587,4 +1587,37 @@ test('a stopped clip acks exactly once (ended after pause must not ack again)', 
   const src = readSrc('renderer', 'widget.js');
   const speakBody = extractFunctionBody(src, 'async function speak(text, envelope) {');
   assert.match(speakBody, /if \(settled\) return;\s*settled = true;/);
+});
+
+// ── mic gate: nothing speaks while any widget records ────────────────────────
+//
+// 2026-10-20: LAS voices played over the user's dictation and the agent
+// misheard it; a long dictation may be impossible to repeat. While ANY
+// window records, every clip pauses or waits — app-wide, and the backend's
+// queue is held too. Nothing is dropped.
+
+test('recording a dictation raises the app-wide mic gate, stopping lowers it', () => {
+  const src = readSrc('renderer/widget.js');
+  const setState = extractFunctionBody(src, 'function setMicState(next)');
+  assert.match(setState, /window\.las\.setMicRecording\(agentName, next === 'listening'\)/);
+  assert.match(setState, /\(next === 'listening'\) !== \(micState === 'listening'\)/, 'only on a listening transition, not on every state change');
+  const main = readSrc('main.js');
+  const gate = extractFunctionBody(main, 'function setMicRecording(name, recording)');
+  assert.match(gate, /webContents\.send\('mic:held', held\)/, 'every window hears it, not just the recording one');
+  assert.match(gate, /postBackend\('\/queue\/hold'/, 'the backend queue is held too');
+  assert.match(gate, /setInterval\(/, 'the hold is renewed — the backend lets an unrenewed one lapse');
+  const closed = main.slice(main.indexOf("win.on('closed', () => {"));
+  assert.match(closed.slice(0, 300), /setMicRecording\(name, false\)/, 'a window closed mid-dictation releases the gate');
+});
+
+test('a clip never starts while the mic is held, and the one playing pauses and resumes', () => {
+  const src = readSrc('renderer/widget.js');
+  const speakBody = extractFunctionBody(src, 'async function speak(text, envelope)');
+  assert.ok(speakBody.indexOf('await micReleased()') !== -1 && speakBody.indexOf('await micReleased()') < speakBody.indexOf('mayPlay('),
+    'wait for the mic BEFORE asking the queue for the speaker');
+  assert.match(speakBody, /if \(!micHeld\) currentSpeech\.resume\(\)/);
+  const onHeld = src.slice(src.indexOf('window.las.onMicHeld('));
+  assert.match(onHeld.slice(0, 500), /currentSpeech\.audioEl\.pause\(\)/, 'paused, not stopped: it must not be dropped');
+  assert.match(onHeld.slice(0, 500), /currentSpeech\.resume\(\)/);
+  assert.match(readSrc('preload.js'), /onMicHeld: \(cb\) =>/);
 });

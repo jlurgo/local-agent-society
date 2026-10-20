@@ -237,6 +237,32 @@ SPEAK_GAP_S             = 0.3    # breath between two consecutive clips
 _speak_acks_lock = threading.Lock()
 _speak_acks: dict[str, dict] = {}   # speak id → {"started", "playing", "done": Event, "granted": bool, "duration_s", "name"}
 
+# The MIC HOLD: while a widget is recording a dictation nothing may speak —
+# a voice over the user's mic contaminates the audio, and a long dictation
+# may be impossible to repeat. The widget app holds the queue while any of
+# its windows records (POST /queue/hold) and renews the hold every few
+# seconds; MIC_HOLD_TTL_S without a renewal releases it, so a crashed widget
+# can never silence the society for good. While held, the drainer starts no
+# new turn and every budget below stops counting: the clip in flight pauses
+# in its widget and waits, nothing is dropped.
+MIC_HOLD_TTL_S = 30.0
+_mic_hold_until = 0.0   # time.monotonic() deadline; 0 = not held
+
+
+def _mic_held() -> bool:
+    return time.monotonic() < _mic_hold_until
+
+
+def _wait_unless_held(event: threading.Event, timeout: float, step: float = 0.25) -> bool:
+    """event.wait(timeout), except the clock stops while the mic holds the queue."""
+    remaining = timeout
+    while remaining > 0:
+        if event.wait(min(step, remaining)):
+            return True
+        if not _mic_held():
+            remaining -= step
+    return event.is_set()
+
 
 def _speak_timeout_for(text: str, duration_s: float | None = None) -> float:
     """How long a clip that is PLAYING may take before the turn is released."""
@@ -288,7 +314,9 @@ def _retire_unless_granted(speak_id: str) -> bool:
 def _drain_one() -> bool:
     """Pop one speak request, publish it, and block until its widget reports
     playback over (or a safety valve fires). Returns False when the queue was
-    empty, so the caller can sleep instead of spinning."""
+    empty — or the mic holds it — so the caller can sleep instead of spinning."""
+    if _mic_held():
+        return False
     msg = _pop_speak_request()
     if msg is None:
         return False
@@ -328,16 +356,16 @@ def _drain_one() -> bool:
         }
         if not _vortexia_publish(SPEAK_TOPIC, envelope):
             return True
-        if not pending["started"].wait(SPEAK_PICKUP_GRACE_S) and _retire_unless_granted(speak_id):
+        if not _wait_unless_held(pending["started"], SPEAK_PICKUP_GRACE_S) and _retire_unless_granted(speak_id):
             logger.warning(f"[tts] no widget picked up {tag} within {SPEAK_PICKUP_GRACE_S}s — moving on")
             return True
-        if not pending["playing"].wait(SPEAK_SYNTH_MAX_S) and _retire_unless_granted(speak_id):
+        if not _wait_unless_held(pending["playing"], SPEAK_SYNTH_MAX_S) and _retire_unless_granted(speak_id):
             logger.warning(f"[tts] {tag} not ready to play after {SPEAK_SYNTH_MAX_S:.0f}s — "
                            f"turn released; the clip will be refused if it ever arrives")
             return True
         t_play = time.time()
         timeout = _speak_timeout_for(text, pending["duration_s"])
-        if not pending["done"].wait(timeout):
+        if not _wait_unless_held(pending["done"], timeout):
             logger.warning(f"[tts] {tag} never reported done {timeout:.0f}s into playback — moving on")
         elif pending["granted"]:
             logger.info(f"[tts] {tag}: ready in {t_play - t0:.1f}s, played {time.time() - t_play:.1f}s")
@@ -428,6 +456,10 @@ class SpeakAckRequest(BaseModel):
     phase:  str = Field(pattern=r"^(started|playing|done|skipped)$")
     reason: Optional[str] = Field(default=None, max_length=200)
     duration_ms: Optional[int] = Field(default=None, ge=0, le=3_600_000)   # with `playing`: the clip's real length
+
+
+class QueueHoldRequest(BaseModel):
+    holding: bool
 
 
 class AttributionEntry(BaseModel):
@@ -1113,6 +1145,15 @@ def ack_speak(req: SpeakAckRequest):
     if req.phase == "skipped":
         logger.info(f"[tts] speak {req.id[:8]} skipped by widget: {req.reason or 'no reason given'}")
     return {"ok": True, "known": known}
+
+
+@app.post("/queue/hold")
+def hold_queue(req: QueueHoldRequest):
+    """The widget app's mic: `holding: true` while any window records (renewed
+    every few seconds), `false` when the last one stops. See MIC_HOLD_TTL_S."""
+    global _mic_hold_until
+    _mic_hold_until = time.monotonic() + MIC_HOLD_TTL_S if req.holding else 0.0
+    return {"ok": True, "held": _mic_held()}
 
 
 @app.get("/queue")

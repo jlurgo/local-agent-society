@@ -134,6 +134,16 @@ contextBridge.exposeInMainWorld('las', {
     ipcRenderer.on('audio:status', (_event, status) => cb(status));
   },
 
+  /** This window started/stopped recording a dictation. Resolves to whether
+   * any window is recording now (the app-wide mic gate, main.js). */
+  setMicRecording: (name, recording) => ipcRenderer.invoke('mic:recording', name, recording),
+
+  /** The app-wide mic gate changed: `held` = some window is recording, so
+   * nothing may speak. @param {(held: boolean) => void} cb */
+  onMicHeld: (cb) => {
+    ipcRenderer.on('mic:held', (_event, held) => cb(held));
+  },
+
   /** "Open" button: a NEW window of the default terminal ('terminal'), or
    * the file manager ('folder'), at this agent's registered directory —
    * main.js resolves the path from the backend registry. Resolves to

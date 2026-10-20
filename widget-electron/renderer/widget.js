@@ -785,6 +785,28 @@ function stopCurrentSpeech() {
   if (currentSpeech) currentSpeech.stop();
 }
 
+// The app-wide mic gate (main.js "mic gate"): while ANY widget records a
+// dictation nothing speaks — the clip playing now pauses where it is and
+// resumes after, the next one waits before it starts. Never dropped.
+let micHeld = false;
+let micReleaseWaiters = [];
+
+function micReleased() {
+  return micHeld ? new Promise((resolve) => micReleaseWaiters.push(resolve)) : Promise.resolve();
+}
+
+window.las.onMicHeld((held) => {
+  micHeld = held;
+  if (held) {
+    if (currentSpeech) currentSpeech.audioEl.pause();
+    return;
+  }
+  if (currentSpeech) currentSpeech.resume();
+  const waiters = micReleaseWaiters;
+  micReleaseWaiters = [];
+  waiters.forEach((resolve) => resolve());
+});
+
 /** Resolves once the clip has finished playing (or was skipped). */
 async function speak(text, envelope) {
   if (prefs.mute) {
@@ -819,6 +841,7 @@ async function speak(text, envelope) {
   }
   const url = URL.createObjectURL(new Blob([result.wav], { type: 'audio/wav' }));
   const audioEl = new Audio(url);
+  await micReleased(); // never take the speaker while someone is dictating
   if (!(await mayPlay(envelope, await audioDurationMs(audioEl)))) {
     // Refused: its turn is over. Not played, not acked again — the backend
     // already moved on and logged the refusal.
@@ -847,13 +870,15 @@ async function speak(text, envelope) {
         audioEl.pause();
         finish('skipped', 'muted');
       },
+      resume: () => audioEl.play().catch((err) => {
+        console.warn('[widget] audio playback failed', err);
+        finish('skipped', 'play-rejected');
+      }),
     };
     audioEl.addEventListener('ended', () => finish('done'));
     audioEl.addEventListener('error', () => finish('skipped', 'playback-error'));
-    audioEl.play().catch((err) => {
-      console.warn('[widget] audio playback failed', err);
-      finish('skipped', 'play-rejected');
-    });
+    // The mic may have started during mayPlay: then the gate's release plays it.
+    if (!micHeld) currentSpeech.resume();
   });
 }
 
@@ -1020,6 +1045,7 @@ let maxDurationTimer = null;
 let countdownTimers = [];
 
 function setMicState(next) {
+  if ((next === 'listening') !== (micState === 'listening')) window.las.setMicRecording(agentName, next === 'listening');
   micState = next;
   micEl.classList.toggle('active', next === 'listening');
   micEl.classList.toggle('busy', next === 'transcribing');

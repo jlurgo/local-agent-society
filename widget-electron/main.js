@@ -470,6 +470,7 @@ function createWidgetWindow(name, { forgetPosition = false } = {}) {
 
   win.on('closed', () => {
     windows.delete(name);
+    setMicRecording(name, false); // a window closed mid-dictation must not hold everyone's voice
     occlusionExpandedWindows.delete(win);
     const client = vortexiaClients.get(name);
     if (client) {
@@ -1257,10 +1258,11 @@ ipcMain.handle('agent:config-sessions', async (_event, name, patch) => {
   }
 });
 
-/** POST to the backend; the parsed JSON, or null (logged under `what`). */
-async function postBackend(urlPath, what) {
+/** POST (`body` as JSON, if any) to the backend; the parsed JSON, or null (logged under `what`). */
+async function postBackend(urlPath, what, body) {
   try {
-    const res = await fetch(`${REGISTRY_URL}${urlPath}`, { method: 'POST' });
+    const init = body === undefined ? { method: 'POST' } : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+    const res = await fetch(`${REGISTRY_URL}${urlPath}`, init);
     const json = await res.json().catch(() => ({}));
     if (res.ok) return json;
     log.error('children', `${what} failed: HTTP ${res.status} ${json.detail || ''}`);
@@ -1322,6 +1324,40 @@ ipcMain.handle('agent:session-close', async (_event, name, sid) => {
   const json = await postBackend(`${sessionPath(name, sid)}/close`, `close ${name}/${sid}`);
   if (json) log.info('children', `${name}/${sid}: closed ${json.tty}`);
   return json;
+});
+
+// -- mic gate: nothing speaks while any widget records ----------------------
+//
+// A voice over the user's dictation contaminates the audio and the agent
+// mishears it — and a long dictation may be impossible to repeat. While ANY
+// window records: every window is told (`mic:held`) and pauses the clip it
+// is playing, holding the next until release; and the backend's speech
+// queue is held (POST /queue/hold, renewed every MIC_HOLD_RENEW_MS — the
+// backend lets an unrenewed hold lapse, so a crash here can't silence the
+// society). Nothing is dropped: everything waits for the mic to stop.
+
+const MIC_HOLD_RENEW_MS = 10000;
+const recordingWindows = new Set();
+let micHoldRenewTimer = null;
+
+function setMicRecording(name, recording) {
+  const wasHeld = recordingWindows.size > 0;
+  if (recording) recordingWindows.add(name);
+  else recordingWindows.delete(name);
+  const held = recordingWindows.size > 0;
+  if (held === wasHeld) return;
+  log.info('mic', `${held ? 'held' : 'released'} — LAS voices ${held ? 'wait' : 'resume'} (${name})`);
+  for (const win of windows.values()) {
+    if (!win.isDestroyed()) win.webContents.send('mic:held', held);
+  }
+  clearInterval(micHoldRenewTimer);
+  micHoldRenewTimer = held ? setInterval(() => postBackend('/queue/hold', 'mic hold renewal', { holding: true }), MIC_HOLD_RENEW_MS) : null;
+  postBackend('/queue/hold', `mic ${held ? 'hold' : 'release'}`, { holding: held });
+}
+
+ipcMain.handle('mic:recording', (_event, name, recording) => {
+  setMicRecording(name, !!recording);
+  return recordingWindows.size > 0;
 });
 
 // `tts_voice` (optional, .las-agent.json): a Kokoro voice id (lib/kokoroVoices.js)
@@ -1772,6 +1808,10 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin') {
     app.dock?.hide();
   }
+  // No window records at launch: closes any "[mic] recording started" a
+  // crash or restart left open, which restart-widget.sh would otherwise
+  // wait on forever.
+  log.info('mic', 'idle — app started');
 
   // Mic button (dictation) records via the renderer's MediaRecorder/
   // getUserMedia (transcription itself runs locally in this process — see
