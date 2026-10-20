@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import os
+import signal
 import subprocess
 import sys
 
@@ -84,10 +85,7 @@ def stdout_fd() -> int | None:
         return None
 
 
-def set_terminal_title(text: str, tty: str | None = None, fd: int | None = None) -> bool:
-    """Write the title escape to a tty path, or to an fd (the real stdout of a
-    launcher). Best effort: False when there is no terminal to write to."""
-    data = TITLE_OSC.format(text=" ".join(text.split())).encode()
+def _write(data: bytes, tty: str | None = None, fd: int | None = None) -> bool:
     try:
         if fd is not None:
             if not os.isatty(fd):
@@ -101,3 +99,29 @@ def set_terminal_title(text: str, tty: str | None = None, fd: int | None = None)
     except OSError:
         return False
     return False
+
+
+def set_terminal_title(text: str, tty: str | None = None, fd: int | None = None) -> bool:
+    """Write the title escape to a tty path, or to an fd (the real stdout of a
+    launcher). Best effort: False when there is no terminal to write to."""
+    return _write(TITLE_OSC.format(text=" ".join(text.split())).encode(), tty, fd)
+
+
+def ring_bell(tty: str) -> bool:
+    """BEL on a tty: the terminal's own "look here" (Ghostty marks the tab, the dock bounces)."""
+    return _write(b"\a", tty)
+
+
+def hangup_tty(tty: str) -> bool:
+    """SIGHUP every process on `tty` — what a terminal sends when its window
+    closes: the runtime exits, the shell exits, the terminal closes the window.
+    Listed with `ps -t`: macOS pkill/pgrep -t match nothing. The root-owned
+    login refuses the signal and exits once its shell does. True if any got it."""
+    hung = False
+    for pid in _ps(["-t", os.path.basename(tty), "-o", "pid="]).split():
+        try:
+            os.kill(int(pid), signal.SIGHUP)
+            hung = True
+        except (OSError, ValueError):
+            pass
+    return hung

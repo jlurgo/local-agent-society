@@ -93,3 +93,21 @@ def test_set_terminal_title_is_best_effort(tmp_path):
         os.close(w)
     assert terminal.session_title_text("Robo", "", "codex") == "Robo · codex"
     assert terminal.session_title_text("Robo", "Ships", None) == "Robo — Ships"
+
+
+def test_ring_bell_writes_bel_and_hangup_targets_the_tty_by_name(tmp_path, monkeypatch):
+    from cli import terminal
+    fake_tty = tmp_path / "ttys009"
+    fake_tty.write_bytes(b"")
+    assert terminal.ring_bell(str(fake_tty)) is True
+    assert fake_tty.read_bytes() == b"\a"
+    monkeypatch.setattr(terminal, "_ps", lambda args: "  101\n  102\n" if args[:2] == ["-t", "ttys009"] else "")
+    signalled = []
+    def fake_kill(pid, sig):
+        if pid == 101:
+            raise PermissionError("root-owned login")
+        signalled.append((pid, sig))
+    monkeypatch.setattr(terminal.os, "kill", fake_kill)
+    assert terminal.hangup_tty("/dev/ttys009") is True
+    assert signalled == [(102, terminal.signal.SIGHUP)], "a refused pid (login) never stops the rest"
+    assert terminal.hangup_tty("/dev/ttys404") is False

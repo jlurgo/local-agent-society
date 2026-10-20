@@ -313,3 +313,57 @@ def test_a_gone_session_has_its_broker_mailbox_dropped(app):
     drops = [e for t, e, _ in main.published if t == "vortexia/control/mailbox/drop"]
     assert {(d["clientId"], d["force"]) for d in drops} == {("las-agent-Robo-codex-1", False), ("las-agent-Robo-claude-1", True)}
     assert all(d["id"] for d in drops)
+
+
+@pytest.fixture
+def tty_calls(app, monkeypatch):
+    """The tty side of beacon/close, recorded instead of touching a real terminal."""
+    main, _ = app
+    calls = []
+    monkeypatch.setattr(main, "tty_of_pid", lambda pid: None if int(pid) == 2 else f"/dev/ttys{int(pid):03d}")
+    monkeypatch.setattr(main, "set_terminal_title", lambda text, tty=None: (calls.append(("title", tty, text)), True)[1])
+    monkeypatch.setattr(main, "ring_bell", lambda tty: (calls.append(("bell", tty)), True)[1])
+    monkeypatch.setattr(main, "hangup_tty", lambda tty: (calls.append(("hangup", tty)), True)[1])
+    monkeypatch.setattr(main, "SESSION_BEACON_SECONDS", 0.01)
+    return calls
+
+
+def test_beacon_titles_the_sessions_tty_uniquely_rings_and_restores_its_own_title(app, tty_calls):
+    """The widget's find button: the beacon is what it asks Ghostty to focus, so it must be unique."""
+    main, client = app
+    _register(client, "claude-1", "claude", pid=5)
+    client.put("/agents/Robo/sessions/claude-1/title", json={"title": "Fix the mic"})
+    first = client.post("/agents/Robo/sessions/claude-1/beacon").json()
+    second = client.post("/agents/Robo/sessions/claude-1/beacon").json()
+    assert first["tty"] == "/dev/ttys005" and first["beacon"] != second["beacon"]
+    assert ("title", "/dev/ttys005", first["beacon"]) in tty_calls and ("bell", "/dev/ttys005") in tty_calls
+    import time
+    time.sleep(0.1)
+    assert ("title", "/dev/ttys005", "Robo · claude — Fix the mic") in tty_calls, "the session's own title comes back"
+
+
+def test_close_hangs_up_the_sessions_tty_and_drops_it(app, tty_calls):
+    main, client = app
+    _register(client, "claude-1", "claude", pid=5)
+    _register(client, "shell-1", "shell", pid=6)
+    view = client.post("/agents/Robo/sessions/shell-1/close").json()
+    assert ("hangup", "/dev/ttys006") in tty_calls and view["tty"] == "/dev/ttys006"
+    assert [s["sid"] for s in view["sessions"]] == ["claude-1"] and view["default"] == "claude-1"
+    assert any(t == "vortexia/control/mailbox/drop" for t, _, _ in main.published), "its mailbox goes with it"
+
+
+def test_beacon_and_close_refuse_unknown_sessions_and_sessions_without_a_terminal(app, tty_calls):
+    _, client = app
+    _register(client, "headless", "codex", pid=2)
+    assert client.post("/agents/Robo/sessions/nope/beacon").status_code == 404
+    assert client.post("/agents/Robo/sessions/nope/close").status_code == 404
+    assert client.post("/agents/Robo/sessions/headless/close").status_code == 409
+    assert not any(c[0] == "hangup" for c in tty_calls), "never hang up a tty that could not be resolved"
+
+
+def test_close_keeps_the_session_when_the_hangup_fails(app, tty_calls, monkeypatch):
+    main, client = app
+    _register(client, "shell-1", "shell", pid=6)
+    monkeypatch.setattr(main, "hangup_tty", lambda tty: False)
+    assert client.post("/agents/Robo/sessions/shell-1/close").status_code == 409
+    assert [s["sid"] for s in client.get("/agents/Robo/sessions").json()["sessions"]] == ["shell-1"]

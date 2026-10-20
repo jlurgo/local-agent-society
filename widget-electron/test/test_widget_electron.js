@@ -120,7 +120,7 @@ test('no in-process Apple Events anywhere in the app source', () => {
   assert.deepEqual(offenders, [], `found in-process Apple Events usage in: ${offenders.join(', ')}`);
 });
 
-test('osascript is only spawned from openTerminalAtPath (macOS new-terminal-window launch), nowhere else', () => {
+test('osascript is only spawned from runOsascript in main.js, nowhere else', () => {
   const dirs = ['.', 'renderer', 'lib'];
   const offenders = [];
   for (const dir of dirs) {
@@ -137,15 +137,23 @@ test('osascript is only spawned from openTerminalAtPath (macOS new-terminal-wind
   }
   assert.deepEqual(offenders, [], `found unexpected osascript/AppleScript references in: ${offenders.join(', ')}`);
 
+  const mainSrc = stripComments(readSrc('main.js'));
+  const body = extractFunctionBody(readSrc('main.js'), "function runOsascript(script, args = [])");
+  assert.match(stripComments(body), /execFile\('osascript'/, 'runOsascript spawns the osascript CLI');
+  const spawns = [...mainSrc.matchAll(/['"]osascript['"]/g)].length;
+  assert.equal(spawns, 1, 'osascript must only be spawned inside runOsascript');
+});
+
+test('the children menu finds and closes a session through the backend, with the beacon passed as argv', () => {
   const mainSrc = readSrc('main.js');
-  const occurrences = [...stripComments(mainSrc).matchAll(/osascript/gi)];
-  assert.ok(occurrences.length > 0, 'expected openTerminalAtPath to spawn osascript for a new Ghostty/iTerm2 window');
-  const body = extractFunctionBody(mainSrc, 'function openTerminalAtPath(cwd)');
-  for (const m of stripComments(body).matchAll(/osascript/gi)) {
-    void m; // presence check only — every osascript reference in main.js must be inside this function
-  }
-  const outsideCount = occurrences.length - [...stripComments(body).matchAll(/osascript/gi)].length;
-  assert.equal(outsideCount, 0, 'osascript must only be spawned inside openTerminalAtPath');
+  assert.match(mainSrc, /ipcMain\.handle\('agent:session-find'[\s\S]*?\/beacon`/);
+  assert.match(mainSrc, /ipcMain\.handle\('agent:session-close'[\s\S]*?\/close`/);
+  assert.match(mainSrc, /runOsascript\(GHOSTTY_FOCUS_TITLE_SCRIPT, \[json\.beacon\]\)/,
+    'the beacon is an argument, never interpolated into the script');
+  const widgetSrc = readSrc('renderer/widget.js');
+  assert.match(widgetSrc, /if \(row\.sid\) el\.append\(\.\.\.sessionActionButtons\(row\.sid\)\)/,
+    'only session rows (not default/all) get find/close');
+  assert.doesNotMatch(stripComments(widgetSrc), /\bconfirm\(/, 'close confirms with a second click, never a blocking dialog');
 });
 
 // ── voice-selection hashing ──────────────────────────────────────────────────
@@ -452,7 +460,7 @@ test('openTerminalAtPath opens a NEW WINDOW: Ghostty (preferred, via its scripti
   assert.match(body, /resolveTerminalApp\(\)/);
   assert.match(body, /GHOSTTY_NEW_WINDOW_SCRIPT/);
   assert.match(body, /ITERM_NEW_WINDOW_SCRIPT/);
-  assert.match(body, /spawn\('osascript',\s*\[scriptPath,\s*dir\]/, 'the directory is passed as an argv item, never interpolated into the script text');
+  assert.match(body, /runOsascript\(script,\s*\[dir\]\)/, 'the directory is passed as an argv item, never interpolated into the script text');
   assert.match(body, /spawn\('open',\s*\['-a',\s*appName,\s*dir\]/, 'Terminal.app / custom apps open via `open -a <App> <dir>`');
   assert.doesNotMatch(src, /'-a',\s*'Ghostty'/, 'never `open -a Ghostty` (tab, not window)');
 });
@@ -1544,11 +1552,13 @@ test('children rows carry each session\'s title; the menu\'s refresh asks the in
   assert.match(render, /intelligent !== false/, 'no refresh when only a shell is connected: a shell cannot describe itself');
   const ask = extractFunctionBody(src, 'async function requestSessionTitles(btn)');
   assert.match(ask, /window\.las\.requestSessionTitles\(agentName\)/);
-  assert.match(ask, /refreshSessions\(\)/, 'titles arrive asynchronously: re-read the list');
+  assert.match(ask, /reloadChildrenMenu\(\)/, 'titles arrive asynchronously: re-read the list');
+  assert.match(extractFunctionBody(src, 'async function reloadChildrenMenu()'), /refreshSessions\(\)/);
   assert.match(readSrc('preload.js'), /requestSessionTitles: \(name\) => ipcRenderer\.invoke\('agent:request-session-titles', name\)/);
   const ipc = extractFunctionBody(readSrc('main.js'), "ipcMain.handle('agent:request-session-titles', async (_event, name) => {");
   assert.match(ipc, /\/sessions\/titles\/request`/);
-  assert.match(ipc, /method: 'POST'/);
+  assert.match(ipc, /postBackend\(/);
+  assert.match(extractFunctionBody(readSrc('main.js'), 'async function postBackend(urlPath, what)'), /method: 'POST'/);
   assert.match(src, /envelope\.kind === 'title-request'/, 'the request itself never shows in the log');
 });
 

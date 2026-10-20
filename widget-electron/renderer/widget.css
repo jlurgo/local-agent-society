@@ -563,6 +563,11 @@ html, body {
   background: rgba(0, 0, 0, 0.2);
 }
 
+.open-row .open-move.armed {
+  background: rgba(200, 40, 40, 0.85);
+  color: #fff;
+}
+
 .open-row .open-move:disabled {
   opacity: 0.3;
   cursor: default;

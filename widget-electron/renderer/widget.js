@@ -1398,9 +1398,9 @@ function sessionLabel(s) {
 }
 
 /**
- * The choices, as {value, label, scope?, alias?}: the two fixed ones, then
- * one row per connected session. A runtime with a single session gets a row
- * valued by the runtime name (what `las agent target shell` writes: it
+ * The choices, as {value, label, scope?, sid?, alias?}: the two fixed ones,
+ * then one row per connected session (`sid` = the session it stands for).
+ * A runtime with a single session gets a row valued by the runtime name (what `las agent target shell` writes: it
  * survives that terminal being reopened with a new session id, which a sid
  * never would). A runtime with several sessions gets one row per session,
  * valued by its id — no extra "group" row, which read as one more session.
@@ -1421,11 +1421,11 @@ function targetRows() {
   }
   for (const [runtime, sessions] of byRuntime) {
     if (sessions.length === 1) {
-      rows.push({ value: runtime, label: sessionLabel(sessions[0]), scope: sessions[0].scope });
+      rows.push({ value: runtime, label: sessionLabel(sessions[0]), scope: sessions[0].scope, sid: sessions[0].sid });
       continue;
     }
     // knownSessions is most-recently-used first: sessions[0] is what the runtime name resolves to.
-    sessions.forEach((s, i) => rows.push({ value: s.sid, label: sessionLabel(s), scope: s.scope, alias: i === 0 ? runtime : undefined }));
+    sessions.forEach((s, i) => rows.push({ value: s.sid, label: sessionLabel(s), scope: s.scope, sid: s.sid, alias: i === 0 ? runtime : undefined }));
   }
   return rows;
 }
@@ -1533,6 +1533,7 @@ function renderChildrenMenu() {
       closeChildrenMenu();
     });
     el.appendChild(btn);
+    if (row.sid) el.append(...sessionActionButtons(row.sid));
     childrenMenuEl.appendChild(el);
   }
   if (knownSessions.some((s) => s.intelligent !== false)) {
@@ -1547,6 +1548,55 @@ function renderChildrenMenu() {
     refreshRow.appendChild(refreshBtn);
     childrenMenuEl.appendChild(refreshRow);
   }
+}
+
+/** Re-read the sessions and redraw the menu, if it is still open. */
+async function reloadChildrenMenu() {
+  await refreshSessions();
+  if (!childrenMenuOpen) return;
+  syncMicTargetSelect();
+  renderChildrenMenu();
+  fitWindowToDrawer();
+}
+
+const CLOSE_CONFIRM_MS = 3000;
+
+function iconButton(text, title, onClick) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'open-move';
+  b.textContent = text;
+  b.title = title;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+/**
+ * Per-session buttons: find (the terminal gets a beacon title + bell and,
+ * in Ghostty, is focused — window to front, Space switched) and close (its
+ * tty is hung up, like closing the window). Close takes a second click
+ * within CLOSE_CONFIRM_MS: no modal dialog, no accidental kill.
+ */
+function sessionActionButtons(sid) {
+  const find = iconButton('⌖', 'Find this terminal — bring it to the front', async () => {
+    const res = await window.las.findSession(agentName, sid);
+    if (res && res.focused) closeChildrenMenu();
+    else find.title = res && res.ok ? 'Look for the terminal titled "◉ … here ◉" (it rang its bell)' : 'Could not reach this terminal';
+  });
+  let armed = null;
+  const close = iconButton('✕', 'Close this terminal', async () => {
+    if (!armed) {
+      close.classList.add('armed');
+      close.title = 'Click again to close it';
+      armed = setTimeout(() => { armed = null; close.classList.remove('armed'); close.title = 'Close this terminal'; }, CLOSE_CONFIRM_MS);
+      return;
+    }
+    clearTimeout(armed);
+    armed = null;
+    await window.las.closeSession(agentName, sid);
+    await reloadChildrenMenu();
+  });
+  return [find, close];
 }
 
 /**
@@ -1568,11 +1618,7 @@ async function requestSessionTitles(btn) {
   for (const delay of [3000, 5000, 7000, 15000]) {
     await new Promise((resolve) => setTimeout(resolve, delay));
     if (!childrenMenuOpen) return;
-    await refreshSessions();
-    if (!childrenMenuOpen) return;
-    syncMicTargetSelect();
-    renderChildrenMenu();
-    fitWindowToDrawer();
+    await reloadChildrenMenu();
   }
 }
 

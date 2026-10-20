@@ -43,7 +43,7 @@ const { app, BrowserWindow, ipcMain, screen, session, powerMonitor, shell } = re
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
 const Store = require('electron-store');
 const { createTray } = require('./tray');
 const spaces = require('./lib/spaces');
@@ -1047,6 +1047,17 @@ const ITERM_NEW_WINDOW_SCRIPT =
   '  end tell\n' +
   'end run\n';
 
+/** Run an AppleScript whose `on run argv` gets `args` — never interpolated
+ * into the script text, so a path or title with quotes can't break out of
+ * it. The one place the app spawns `osascript`. Resolves to its trimmed
+ * stdout, or null when it failed. */
+function runOsascript(script, args = []) {
+  const lines = script.trim().split('\n').flatMap((line) => ['-e', line]);
+  return new Promise((resolve) => {
+    execFile('osascript', [...lines, ...args], { timeout: 5000 }, (err, stdout) => resolve(err ? null : String(stdout).trim()));
+  });
+}
+
 /** Open a NEW terminal window whose shell starts in `cwd`. Returns the name
  * of the terminal app it used. */
 function openTerminalAtPath(cwd) {
@@ -1055,11 +1066,7 @@ function openTerminalAtPath(cwd) {
     const appName = resolveTerminalApp();
     const script = appName === 'Ghostty' ? GHOSTTY_NEW_WINDOW_SCRIPT : appName === 'iTerm' ? ITERM_NEW_WINDOW_SCRIPT : null;
     if (script) {
-      const scriptPath = path.join(os.tmpdir(), `las-widget-open-${Date.now()}-${Math.random().toString(36).slice(2)}.applescript`);
-      fs.writeFileSync(scriptPath, script);
-      const child = spawn('osascript', [scriptPath, dir], { detached: true, stdio: 'ignore' });
-      child.unref();
-      child.on('exit', () => fs.unlink(scriptPath, () => {}));
+      runOsascript(script, [dir]);
     } else {
       // Terminal.app (and any other app named via LAS_TERMINAL_APP) opens a
       // new window at a directory handed to it this way.
@@ -1250,23 +1257,71 @@ ipcMain.handle('agent:config-sessions', async (_event, name, patch) => {
   }
 });
 
+/** POST to the backend; the parsed JSON, or null (logged under `what`). */
+async function postBackend(urlPath, what) {
+  try {
+    const res = await fetch(`${REGISTRY_URL}${urlPath}`, { method: 'POST' });
+    const json = await res.json().catch(() => ({}));
+    if (res.ok) return json;
+    log.error('children', `${what} failed: HTTP ${res.status} ${json.detail || ''}`);
+  } catch (err) {
+    log.error('children', `${what} failed: ${err && err.message ? err.message : err}`);
+  }
+  return null;
+}
+
+const sessionPath = (name, sid) => `/agents/${encodeURIComponent(name)}/sessions/${encodeURIComponent(sid)}`;
+
 // The children menu's refresh button: ask every intelligent session of the
 // agent to title itself (backend request_session_titles). Answers arrive
 // later, as `las agent title` calls; the renderer re-reads the list.
 ipcMain.handle('agent:request-session-titles', async (_event, name) => {
-  try {
-    const res = await fetch(`${REGISTRY_URL}/agents/${encodeURIComponent(name)}/sessions/titles/request`, { method: 'POST' });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      log.error('children', `title request failed for ${name}: HTTP ${res.status} ${json.detail || ''}`);
-      return null;
+  const json = await postBackend(`/agents/${encodeURIComponent(name)}/sessions/titles/request`, `title request for ${name}`);
+  if (json) log.info('children', `${name}: asked ${json.asked.length} session(s) for a title, skipped ${json.skipped.length}`);
+  return json;
+});
+
+// The children menu's find button: the backend gives the session's terminal
+// a unique title and rings its bell (session_beacon); Ghostty, which exposes
+// its terminals' titles, is then asked to focus the one carrying it — that
+// brings its window forward, switching Space if needed. Any other terminal
+// keeps the beacon title and the bell as the cue. Ghostty applies a new
+// title asynchronously, hence the short retry.
+const GHOSTTY_FOCUS_TITLE_SCRIPT = `
+on run argv
+  set beacon to item 1 of argv
+  tell application "Ghostty"
+    repeat with t in terminals
+      if name of t contains beacon then
+        focus t
+        activate
+        return "focused"
+      end if
+    end repeat
+  end tell
+  return "not found"
+end run`;
+
+ipcMain.handle('agent:session-find', async (_event, name, sid) => {
+  const json = await postBackend(`${sessionPath(name, sid)}/beacon`, `find ${name}/${sid}`);
+  if (!json) return { ok: false, focused: false };
+  let focused = false;
+  if (process.platform === 'darwin' && resolveTerminalApp() === 'Ghostty') {
+    for (let attempt = 0; attempt < 4 && !focused; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      focused = (await runOsascript(GHOSTTY_FOCUS_TITLE_SCRIPT, [json.beacon])) === 'focused';
     }
-    log.info('children', `${name}: asked ${json.asked.length} session(s) for a title, skipped ${json.skipped.length}`);
-    return json;
-  } catch (err) {
-    log.error('children', `title request failed for ${name}: ${err && err.message ? err.message : err}`);
-    return null;
   }
+  log.info('children', `${name}/${sid}: beacon on ${json.tty}, focused=${focused}`);
+  return { ok: true, focused };
+});
+
+// The children menu's close button: the backend hangs up the session's tty
+// (the terminal closes as if its window had been closed) and drops it.
+ipcMain.handle('agent:session-close', async (_event, name, sid) => {
+  const json = await postBackend(`${sessionPath(name, sid)}/close`, `close ${name}/${sid}`);
+  if (json) log.info('children', `${name}/${sid}: closed ${json.tty}`);
+  return json;
 });
 
 // `tts_voice` (optional, .las-agent.json): a Kokoro voice id (lib/kokoroVoices.js)

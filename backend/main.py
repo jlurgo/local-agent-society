@@ -29,6 +29,7 @@ from cli.agent_config import (KIND_COMMAND, KIND_TITLE_REQUEST, TARGET_ALL, TARG
                               descriptor_for, merge_config_patch, read_agent_config, sessions_config, title_request_text,
                               write_agent_config)
 from cli.path_utils import agent_config_path
+from cli.terminal import hangup_tty, ring_bell, session_title_text, set_terminal_title, tty_of_pid
 
 app = FastAPI(title="Local Agent Society", version="1.0.0")
 
@@ -895,6 +896,53 @@ def unregister_session(name: str, sid: str):
         published = _publish_default_session(name, sessions)
         view = _sessions_view(name, sessions)
     return {"ok": True, "removed": removed, "published": published, **view}
+
+
+# ── finding and closing a session's terminal (the widget's children list) ────
+#
+# A session's pid is its bridge's, which shares the session's controlling
+# tty. The beacon gives that terminal a unique title for a few seconds — the
+# widget then asks the terminal app to focus whichever terminal carries it
+# (Ghostty exposes titles, not ttys) — plus a bell; the session's own title
+# comes back afterwards. Close hangs the tty up, like closing the window.
+
+SESSION_BEACON_SECONDS = 6
+
+
+def _session_tty(name: str, sid: str) -> tuple[dict, str]:
+    with _sessions_lock:
+        session = _load_sessions(name).get(sid)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"{name} has no connected session {sid!r}")
+    tty = tty_of_pid(session.get("pid"))
+    if not tty:
+        raise HTTPException(status_code=409, detail=f"session {sid!r} has no terminal")
+    return session, tty
+
+
+@app.post("/agents/{name}/sessions/{sid}/beacon")
+def session_beacon(name: str, sid: str):
+    """Make one session's terminal findable: a unique title and a bell, then its own title again."""
+    session, tty = _session_tty(name, sid)
+    runtime = session.get("runtime")
+    beacon = f"◉ {name} · {runtime} — here ◉ {uuid.uuid4().hex[:6]}"
+    if not set_terminal_title(beacon, tty=tty):
+        raise HTTPException(status_code=409, detail=f"cannot write to {tty}")
+    ring_bell(tty)
+    restore = session_title_text(name, session.get("title", ""), runtime)
+    timer = threading.Timer(SESSION_BEACON_SECONDS, set_terminal_title, args=(restore,), kwargs={"tty": tty})
+    timer.daemon = True
+    timer.start()
+    return {"ok": True, "tty": tty, "beacon": beacon}
+
+
+@app.post("/agents/{name}/sessions/{sid}/close")
+def close_session(name: str, sid: str):
+    """Close one session's terminal (SIGHUP its tty) and drop it the way a leaving bridge would."""
+    _, tty = _session_tty(name, sid)
+    if not hangup_tty(tty):
+        raise HTTPException(status_code=409, detail=f"could not hang up {tty}")
+    return {**unregister_session(name, sid), "tty": tty}
 
 
 @app.get("/agents/{name}/hierarchy")

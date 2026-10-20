@@ -112,6 +112,14 @@ contextBridge.exposeInMainWorld('las', {
    * later — re-read getAgentSessions. */
   requestSessionTitles: (name) => ipcRenderer.invoke('agent:request-session-titles', name),
 
+  /** Make one session's terminal findable (unique title + bell) and focus it
+   * where the terminal app allows (Ghostty). Resolves to {ok, focused}. */
+  findSession: (name, sid) => ipcRenderer.invoke('agent:session-find', name, sid),
+
+  /** Close one session's terminal (its tty is hung up). Resolves to the
+   * backend's sessions view, or null. */
+  closeSession: (name, sid) => ipcRenderer.invoke('agent:session-close', name, sid),
+
   /** Local Whisper transcription (main.js's "audio transcription" section) —
    * replaces the broken Electron SpeechRecognition/webkitSpeechRecognition.
    * `pcmBuffer` must be an ArrayBuffer of mono Float32 PCM samples at 16kHz
