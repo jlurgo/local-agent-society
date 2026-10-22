@@ -4,7 +4,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { z } from 'zod';
 import { PassThrough } from 'node:stream';
-import { ClaudeChannelSink, idleClaudeServer, CHANNEL_NOTIFICATION, ACK_TOOL, REPLY_TOOL, STATUS_TOOL, PROBE_PREFIX } from '../src/sinks/claude-channel.js';
+import { ClaudeChannelSink, channelLaunchProblem, idleClaudeServer, CHANNEL_NOTIFICATION, ACK_TOOL, REPLY_TOOL, STATUS_TOOL, PROBE_PREFIX } from '../src/sinks/claude-channel.js';
 import { normalize } from '../src/envelope.js';
 
 const ChannelEvent = z.object({ method: z.literal(CHANNEL_NOTIFICATION), params: z.object({ content: z.string(), meta: z.record(z.string()).optional() }) });
@@ -145,4 +145,27 @@ test('the channel instructions tell the model a kind="cc" event is informational
   assert.match(text, /kind="cc"/);
   assert.match(text, /do not act on it/);
   assert.match(text, /do not reply/);
+});
+
+test('a wrong ack never reveals the current probe id, and las_status does not either', async () => {
+  // summon-restock armed a dead channel by copying the id out of this error.
+  const { sink, client } = await connectedPair({ launchProblem: 'background' });
+  await settle();
+  const wrong = await client.callTool({ name: ACK_TOOL, arguments: { probe_id: 'guess' } });
+  assert.equal(wrong.isError, true);
+  assert.doesNotMatch(wrong.content[0].text, /abc123/);
+  assert.match(wrong.content[0].text, /background Claude session/);
+  assert.match(wrong.content[0].text, /las claude --resume/);
+  const statusText = (await client.callTool({ name: STATUS_TOOL, arguments: {} })).content[0].text;
+  assert.doesNotMatch(statusText, /abc123/);
+  assert.equal(JSON.parse(statusText).launchProblem, 'background');
+  assert.equal(sink.armed, false);
+  await sink.stop();
+});
+
+test('channelLaunchProblem reads the spawning Claude command line', () => {
+  assert.equal(channelLaunchProblem('/Users/x/.local/bin/claude --dangerously-load-development-channels server:las --resume'), null);
+  assert.equal(channelLaunchProblem('claude bg-spare --bg-spare /tmp/cc-daemon-501/x/spare/a.claim.sock'), 'background');
+  assert.equal(channelLaunchProblem('/Users/x/.local/bin/claude'), 'no-flag');
+  assert.equal(channelLaunchProblem(''), null); // unknown parent: the probe decides
 });

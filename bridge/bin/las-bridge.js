@@ -15,11 +15,12 @@
  * `las agent sessions` shows; default = the sink), --intercept-url URL
  * (first-decision hook, fails open), --port N (broker), --quiet.
  */
+import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { idleClaudeServer } from '../src/sinks/claude-channel.js';
 import {
   Bridge, MailboxSource, Pipeline, dedupInterceptor, ignoreKindsInterceptor, senderPolicyInterceptor,
-  micSelfTestInterceptor, httpInterceptor, ClaudeChannelSink, StdoutSink, ShellSink, ExecSink,
+  micSelfTestInterceptor, httpInterceptor, ClaudeChannelSink, channelLaunchProblem, StdoutSink, ShellSink, ExecSink,
   KIND, resolveAgent, StatusFile, makeSender,
 } from '../src/index.js';
 import { SessionRegistry, DefaultWatcher, newSessionId, sessionInboxTopic, sessionMailboxClientId } from '../src/sessions.js';
@@ -84,7 +85,8 @@ if (opts['intercept-url']) interceptors.push(httpInterceptor({ url: opts['interc
 let sink;
 switch (sinkName) {
   case 'claude':
-    sink = new ClaudeChannelSink({ agent: agent.name, send, log });
+    sink = new ClaudeChannelSink({ agent: agent.name, send, log, launchProblem: channelLaunchProblem(parentCommand()) });
+    if (sink.launchProblem) log(`${agent.name}: channel cannot arm here (${sink.launchProblem}) — the mailbox stays put`);
     break;
   case 'stdout':
     sink = new StdoutSink();
@@ -110,7 +112,17 @@ const session = new SessionRegistry({ agent: agent.name, sid, runtime, cwd: proc
 const sessionSource = new MailboxSource({ agent: agent.name, topic: sessionInboxTopic(agent.name, sid), clientId: sessionMailboxClientId(agent.name, sid), port: opts.port, log });
 const defaultWatcher = new DefaultWatcher({ agent: agent.name, port: opts.port, log });
 const status = new StatusFile({ agent: agent.name, sink: sink.name, sid });
+if (sink.launchProblem) status.update({ launchProblem: sink.launchProblem });
 const bridge = new Bridge({ agent: agent.name, source, pipeline: new Pipeline(interceptors), sink, send, status, log, session, sessionSource, defaultWatcher });
+
+/** The command line of the process that spawned this bridge (Claude Code, for the claude sink); '' if unknown. */
+function parentCommand() {
+  try {
+    return execFileSync('ps', ['-o', 'command=', '-p', String(process.ppid)], { encoding: 'utf8' }).trim();
+  } catch {
+    return '';
+  }
+}
 
 let exiting = false;
 async function shutdown(code) {

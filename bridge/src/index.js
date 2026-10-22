@@ -1,7 +1,7 @@
 export { Bridge } from './bridge.js';
 export { MailboxSource, inboxTopic, mailboxClientId } from './source.js';
 export { Pipeline, CONTINUE, HANDLED, dedupInterceptor, ignoreKindsInterceptor, senderPolicyInterceptor, micSelfTestInterceptor, httpInterceptor } from './pipeline.js';
-export { ClaudeChannelSink, CHANNEL_NOTIFICATION, ACK_TOOL, REPLY_TOOL, STATUS_TOOL, PROBE_PREFIX, SERVER_NAME } from './sinks/claude-channel.js';
+export { ClaudeChannelSink, channelLaunchProblem, CHANNEL_NOTIFICATION, ACK_TOOL, REPLY_TOOL, STATUS_TOOL, PROBE_PREFIX, SERVER_NAME } from './sinks/claude-channel.js';
 export { StdoutSink } from './sinks/stdout.js';
 export { ShellSink } from './sinks/shell.js';
 export { ExecSink } from './sinks/exec.js';

@@ -248,3 +248,16 @@ def test_run_in_pty_with_bridge_wires_a_session_bridge_of_that_runtime(monkeypat
     assert bridge_mod._run_in_pty_with_bridge("Robo", ["claude"], "claudeRelay", "/r") == 3
     assert popens == [["/usr/local/bin/node", str(bridge_mod.BRIDGE_BIN), "stdout", "--agent", "Robo", "--runtime", "claudeRelay", "--quiet"]]
     assert ptys == [(["claude"], "/r")]
+
+
+def test_status_names_a_background_session_that_can_never_arm(monkeypatch, tmp_path):
+    monkeypatch.setattr(bridge_mod, "SESSION_DIR", tmp_path)
+    me = os.getpid()
+    (tmp_path / "bridge-Robo@claude-1-aa.json").write_text(json.dumps(
+        {"agent": "Robo", "sink": "claude-channel", "pid": me, "runtime": "claude", "armed": False, "launchProblem": "background"}))
+    from cli import terminal
+    monkeypatch.setattr(terminal, "ancestors", lambda pid=None: [(me, "claude")])
+    result = CliRunner().invoke(cli, ["bridge", "status", "Robo"])
+    assert result.exit_code == 1
+    assert "background Claude session" in result.output
+    assert "las claude --resume" in result.output

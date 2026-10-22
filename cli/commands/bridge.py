@@ -75,6 +75,13 @@ RECONNECT_GUIDE = (
 )
 
 
+# Why a bridge's Claude can never arm the channel (bridge/src/sinks/claude-channel.js channelLaunchProblem).
+LAUNCH_PROBLEMS = {
+    "background": "NOT deliverable: a background Claude session (claude --bg / agents view) never receives channel events",
+    "no-flag": "NOT deliverable: this Claude was started without the channel flag (bare `claude`)",
+}
+
+
 def reconnect_guide() -> str:
     """RECONNECT_GUIDE, naming the account when this shell belongs to a non-default Claude config dir."""
     command = las_claude_command()
@@ -338,9 +345,12 @@ def bridge_status(name):
     armed = bool(status.get("armed"))
     sink = status.get("sink", "?")
     delivered = status.get("delivered", 0)
-    state = "armed" if armed else "waiting for the session to ack the channel probe"
+    problem = LAUNCH_PROBLEMS.get(status.get("launchProblem"))
+    state = "armed" if armed else problem or "waiting for the session to ack the channel probe"
     runtime = f" ({status['runtime']})" if status.get("runtime") else ""
     click.echo(f"{name}: {sink} bridge pid {status.get('pid')}{runtime} — {state}, {delivered} delivered.")
+    if problem and not armed:
+        click.echo(reconnect_guide())
     raise SystemExit(0 if armed else 1)
 
 

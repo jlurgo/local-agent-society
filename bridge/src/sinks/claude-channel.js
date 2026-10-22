@@ -33,6 +33,24 @@ export const ACK_TOOL = 'las_channel_ack';
 export const REPLY_TOOL = 'reply';
 export const STATUS_TOOL = 'las_status';
 
+/** Why a Claude process launched this way can never receive channel events,
+ * from its command line — or null when it can. Claude Code drops channel
+ * notifications silently unless the session was launched with the channel
+ * flag; a background session (`claude --bg`, the agents view) is claimed
+ * from a pre-warmed `bg-spare` process that never carries it. */
+export function channelLaunchProblem(parentCommand) {
+  const cmd = String(parentCommand || '');
+  if (!cmd) return null; // unknown parent: let the probe decide
+  if (/(^|\s)(--)?bg-spare(\s|$)/.test(cmd)) return 'background';
+  if (!cmd.includes('--dangerously-load-development-channels')) return 'no-flag';
+  return null;
+}
+
+const LAUNCH_HINT = {
+  background: 'this is a background Claude session (claude --bg / agents view), which Claude Code never delivers channel events to',
+  'no-flag': 'this Claude was started without the channel flag (bare `claude`, not `las claude`)',
+};
+
 export function instructionsFor(agent) {
   return (
     `This is the Local Agent Society channel for the agent "${agent}". ` +
@@ -50,7 +68,7 @@ export function instructionsFor(agent) {
 }
 
 export class ClaudeChannelSink {
-  constructor({ agent, send, log = () => {}, probeIntervalMs = 60_000, probeBackoffAfter = 3, probeBackoffMs = 300_000, version = '0.1.0', randomId = () => crypto.randomBytes(3).toString('hex') }) {
+  constructor({ agent, send, log = () => {}, probeIntervalMs = 60_000, probeBackoffAfter = 3, probeBackoffMs = 300_000, version = '0.1.0', launchProblem = null, randomId = () => crypto.randomBytes(3).toString('hex') }) {
     if (!agent) throw new TypeError('ClaudeChannelSink needs an agent name');
     this.name = 'claude-channel';
     this.agent = agent;
@@ -60,6 +78,7 @@ export class ClaudeChannelSink {
     this.probeBackoffAfter = probeBackoffAfter;
     this.probeBackoffMs = probeBackoffMs;
     this.randomId = randomId;
+    this.launchProblem = launchProblem;
     this.armed = false;
     this.probeId = null;
     this.probesSent = 0;
@@ -107,7 +126,14 @@ export class ClaudeChannelSink {
       case ACK_TOOL: {
         const id = String(args.probe_id || '');
         if (!this.probeId || id !== this.probeId) {
-          return { ...text(`unknown probe_id ${id || '(empty)'}; current probe is ${this.probeId || 'none'}`), isError: true };
+          // Never echo the current probe id: acking with it without having
+          // received the probe would arm a channel that drops every event.
+          const why = this.launchProblem ? `${LAUNCH_HINT[this.launchProblem]}. ` : '';
+          return {
+            ...text(`unknown probe_id ${id || '(empty)'}. Only the probe_id of a kind="probe" channel event that reached this session arms it. ` +
+              `${why}If no such event ever arrived, channel delivery is off here: exit and reopen this conversation in a terminal with \`las claude --resume\`.`),
+            isError: true,
+          };
         }
         this._arm();
         return text(`armed: mailbox for ${this.agent} now delivers into this session`);
@@ -129,7 +155,7 @@ export class ClaudeChannelSink {
   }
 
   status() {
-    return { agent: this.agent, sink: this.name, armed: this.armed, delivered: this.delivered, probesSent: this.probesSent, probeId: this.probeId };
+    return { agent: this.agent, sink: this.name, armed: this.armed, delivered: this.delivered, probesSent: this.probesSent, launchProblem: this.launchProblem };
   }
 
   async start(transport = new StdioServerTransport()) {
