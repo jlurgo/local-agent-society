@@ -524,3 +524,15 @@ def test_pin_tty_empty_value_not_ok(client):
 def test_pending_link_none_when_never_pinned(client):
     resp = client.get("/agents/NeverPinned/pending-link")
     assert resp.status_code == 204
+
+
+def test_relayed_send_fails_when_the_gateway_rejects_the_name(client, app_module, monkeypatch):
+    monkeypatch.setenv("VORTEXIA_ENV_NAME", "ba-mac")
+    monkeypatch.setattr(app_module, "_relay_direct_send", lambda env, e: (True, f'no agent named "{e["to"]}" is known across vortex-relay'))
+    resp = client.post("/agents/send", json={"to": "Ghost@uy-mac", "message": "hi", "from_agent": "Bob"})
+    assert resp.status_code == 404
+    assert "Ghost@uy-mac" in resp.json()["detail"] and "no agent named" in resp.json()["detail"]
+
+    monkeypatch.setattr(app_module, "_relay_direct_send", lambda env, e: (True, None))
+    resp = client.post("/agents/send", json={"to": "Ghost@uy-mac", "message": "hi", "from_agent": "Bob"})
+    assert resp.json() == {"ok": True, "injected": True, "mode": "direct", "relayed": True}

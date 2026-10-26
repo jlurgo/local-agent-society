@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -329,6 +330,48 @@ def session_state(name: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
     client.loop_stop()
     client.disconnect()
     return state
+
+
+def publish_watching(topic: str, envelope: dict, watch_topic: str, matches, host: str = DEFAULT_HOST,
+                     port: int = DEFAULT_PORT, timeout: float = 1.5) -> Optional[dict]:
+    """Publish `envelope` to `topic`, then listen on `watch_topic` for up to
+    `timeout` seconds and return the first envelope `matches(env)` accepts,
+    or None. A plain clean client, subscribed BEFORE the publish so a fast
+    answer can't be missed; it only listens, so the mailbox consumer of
+    `watch_topic` still gets everything as usual."""
+    found: list = []
+    subscribed = threading.Event()
+    client = mqtt.Client(client_id=f"vortexia-watch-{uuid.uuid4().hex[:8]}", clean_session=True, protocol=mqtt.MQTTv311)
+
+    def _on_connect(c, userdata, flags, rc, *_args):
+        c.subscribe(watch_topic, qos=1)
+
+    def _on_subscribe(c, *_args):
+        subscribed.set()
+
+    def _on_message(c, userdata, msg):
+        try:
+            env = json.loads(msg.payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return
+        if isinstance(env, dict) and matches(env):
+            found.append(env)
+
+    client.on_connect = _on_connect
+    client.on_subscribe = _on_subscribe
+    client.on_message = _on_message
+    client.connect(host, port, keepalive=10)
+    client.loop_start()
+    try:
+        subscribed.wait(timeout)
+        client.publish(topic, json.dumps(envelope), qos=1).wait_for_publish(timeout)
+        deadline = time.time() + timeout
+        while not found and time.time() < deadline:
+            time.sleep(0.02)
+    finally:
+        client.loop_stop()
+        client.disconnect()
+    return found[0] if found else None
 
 
 def poll_inbox(

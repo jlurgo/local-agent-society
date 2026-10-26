@@ -14,7 +14,10 @@ export function makeSender({ from, fetchImpl = globalThis.fetch, registryUrl = R
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ message: String(text), source, from_agent: from }),
     });
-    if (!res.ok) throw new Error(`inject to ${to} failed: HTTP ${res.status}`);
+    if (!res.ok) {
+      const detail = await res.json().then((b) => b && b.detail, () => null);
+      throw new Error(`inject to ${to} failed: HTTP ${res.status}${detail ? ` — ${detail}` : ''}`);
+    }
     return res.json().catch(() => ({}));
   };
 }

@@ -1688,8 +1688,30 @@ def _route_send(*, to: str | None, scope: str | None, message: str, source: str,
     if not env_name:
         raise HTTPException(status_code=404, detail="Agent not found (and vortex-relay not configured on this machine)")
     envelope = {"from": sender, "to": to, "source": source, "text": message, "kind": "vortex-relay-direct", "ts": ts}
-    delivered = _vortexia_publish(vx.inbox_topic(f"{env_name}-gateway"), envelope, retain=False)
+    delivered, rejection = _relay_direct_send(env_name, envelope)
+    if rejection:
+        # The gateway resolves the name before routing and answers a miss
+        # straight away — say so now instead of a "sent" that never lands.
+        raise HTTPException(status_code=404, detail=f"vortex-relay rejected {to!r}: {rejection}")
     return {"ok": True, "injected": delivered, "mode": "direct", "relayed": True}
+
+
+RELAY_REJECT_WAIT_S = 1.5  # the gateway's name resolution is local: a rejection comes back in milliseconds
+
+
+def _relay_direct_send(env_name: str, envelope: dict) -> tuple[bool, Optional[str]]:
+    """Hand a direct envelope to this environment's vortex-relay gateway and
+    watch the sender's inbox briefly for its vortex-relay-direct-error.
+    Returns (published, rejection reason or None)."""
+    def is_rejection(env: dict) -> bool:
+        return env.get("kind") == "vortex-relay-direct-error" and env.get("to") == envelope["to"]
+    try:
+        error = vx.publish_watching(vx.inbox_topic(f"{env_name}-gateway"), envelope, vx.inbox_topic(envelope["from"]),
+                                    is_rejection, host="localhost", port=_vortexia_mqtt_port(), timeout=RELAY_REJECT_WAIT_S)
+    except Exception as exc:
+        logger.warning(f"[vortexia] relay send to {envelope['to']!r} failed (is vortexia running?): {exc}")
+        return False, None
+    return True, (error.get("text") if error else None)
 
 
 @app.post("/agents/send")
