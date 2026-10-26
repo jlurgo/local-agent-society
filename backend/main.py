@@ -475,8 +475,14 @@ class RenameRequest(BaseModel):
     pronunciation: Optional[str] = None
 
 
+# A message is whatever an agent or a dictation has to say — a long handoff
+# or a dictation of many minutes must never bounce. This only guards the
+# backend against a runaway payload.
+MESSAGE_MAX_CHARS = 1_000_000
+
+
 class InjectRequest(BaseModel):
-    message:     str = Field(max_length=10000)
+    message:     str = Field(max_length=MESSAGE_MAX_CHARS)
     source:      str           = "voice"   # "voice" | "agent" | "external" | "raw"
     from_agent:  Optional[str] = None
     # `tty` / `queue` are no longer meaningful — delivery is 100% vortexia now
@@ -489,7 +495,7 @@ class SendRequest(BaseModel):
     """Generic point-to-point OR scope-broadcast send — see send_message().
     Exactly one of `to`/`scope` must be set; pydantic doesn't express an
     XOR directly, so send_message() itself enforces it."""
-    message:     str = Field(max_length=10000)
+    message:     str = Field(max_length=MESSAGE_MAX_CHARS)
     to:          Optional[str] = None   # exact id, optionally "name@env"
     scope:       Optional[str] = None   # free-text scope/intent for broadcast
     source:      str           = "agent"

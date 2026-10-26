@@ -536,3 +536,11 @@ def test_relayed_send_fails_when_the_gateway_rejects_the_name(client, app_module
     monkeypatch.setattr(app_module, "_relay_direct_send", lambda env, e: (True, None))
     resp = client.post("/agents/send", json={"to": "Ghost@uy-mac", "message": "hi", "from_agent": "Bob"})
     assert resp.json() == {"ok": True, "injected": True, "mode": "direct", "relayed": True}
+
+
+def test_a_long_message_is_accepted(client, app_module, monkeypatch):
+    # A 11.5K handoff bounced with 422 string_too_long when the cap was 10000 (2026-10-26).
+    monkeypatch.setenv("VORTEXIA_ENV_NAME", "ba-mac")
+    monkeypatch.setattr(app_module, "_relay_direct_send", lambda env, e: (True, None))
+    resp = client.post("/agents/send", json={"to": "Ghost@uy-mac", "message": "x" * 50_000, "from_agent": "Bob"})
+    assert resp.status_code == 200

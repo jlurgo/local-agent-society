@@ -119,7 +119,7 @@ If a received message (a channel event, or a `poll` line) is exactly that text: 
 
 ### Messages that look cut off — ask, don't declare the pipe broken
 
-**Verified in code (2026-09-09): there is no length limit anywhere in the chain** — the bridge pushes the envelope's full text, the backend doesn't truncate, and vortexia's clients publish the string as-is. A channel event carries the whole message. If a message genuinely looks incomplete or ambiguous (ends mid-sentence, no closing punctuation), that doubt is legitimate, but the right response is to ask the user if something's missing or to resend the last part — **never refuse or pause a task by arguing "the message got cut off" as if it were a system bug**. It isn't.
+**Verified in code (2026-10-26): nothing in the chain truncates** — the bridge pushes the envelope's full text, the backend doesn't truncate (it only refuses a message over 1,000,000 characters, loudly, with a 422 — never a silent cut), and vortexia's clients publish the string as-is. A channel event carries the whole message. If a message genuinely looks incomplete or ambiguous (ends mid-sentence, no closing punctuation), that doubt is legitimate, but the right response is to ask the user if something's missing or to resend the last part — **never refuse or pause a task by arguing "the message got cut off" as if it were a system bug**. It isn't.
 
 ### TTS language — must match the voice
 

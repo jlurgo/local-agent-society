@@ -1898,6 +1898,9 @@ app.whenReady().then(async () => {
       if (!agents[name].inactive) openWidget(name);
     }
   }
+}).catch((err) => {
+  // Without this a throw here killed startup with no trace at all (uy-mac, 2026-09-15).
+  log.error('startup', `whenReady handler threw: ${err && err.stack ? err.stack : err}`);
 });
 
 app.on('window-all-closed', () => {

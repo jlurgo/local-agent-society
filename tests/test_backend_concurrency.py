@@ -185,7 +185,7 @@ def test_inject_ignores_unknown_legacy_fields(client, app_module, monkeypatch):
 
 def test_inject_rejects_oversized_message(client, app_module):
     client.post("/agents", json={"name": "Carl", "voice": "Samantha", "path": "/tmp/carl"})
-    huge = "x" * 20000
+    huge = "x" * (app_module.MESSAGE_MAX_CHARS + 1)
     resp = client.post("/agents/Carl/inject", json={"message": huge})
     assert resp.status_code == 422
 
