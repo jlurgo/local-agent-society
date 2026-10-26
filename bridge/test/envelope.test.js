@@ -29,3 +29,10 @@ test('kind "cc" is a known kind and survives normalize() untouched (a for-the-re
   assert.equal(env.kind, KIND.CC);
   assert.equal(env.text, '[cc → shell] make test');
 });
+
+test('a message that crossed vortex-relay names its sender Name@env, so a same-named agent is not itself', () => {
+  const relayed = normalize({ from: 'System', to: 'System', text: 'hi', kind: 'vortex-relay-delivery', routedFrom: 'uy-mac', ts: 1 });
+  assert.equal(relayed.from, 'System@uy-mac');
+  assert.equal(normalize({ from: 'System@uy-mac', routedFrom: 'uy-mac', text: 'x', ts: 1 }).from, 'System@uy-mac');
+  assert.equal(normalize({ from: 'System', text: 'local', ts: 1 }).from, 'System');
+});

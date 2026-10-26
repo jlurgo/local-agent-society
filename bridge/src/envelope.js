@@ -40,6 +40,12 @@ export const MIC_SELFTEST_PING = '[las-mic-selftest] reply with just "OK" to con
 export function normalize(raw, { now = Date.now } = {}) {
   const env = { ...(raw || {}) };
   env.from = typeof env.from === 'string' ? env.from : '?';
+  // Crossed vortex-relay: say which Mac it came from, so the sender reads
+  // (and a reply goes) as `Name@env` — a bare `System` from another Mac's
+  // System looked like this agent talking to itself.
+  if (typeof env.routedFrom === 'string' && env.routedFrom && env.from !== '?' && !env.from.includes('@')) {
+    env.from = `${env.from}@${env.routedFrom}`;
+  }
   env.to = typeof env.to === 'string' ? env.to : '';
   env.text = typeof env.text === 'string' ? env.text : env.text == null ? '' : String(env.text);
   env.source = typeof env.source === 'string' ? env.source : SOURCE.AGENT;

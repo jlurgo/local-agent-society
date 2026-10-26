@@ -1745,8 +1745,18 @@ def vortexia_poll(name: str, timeout: float = 2.0):
     if name not in registry:
         raise HTTPException(status_code=404, detail="Agent not found")
     timeout = max(0.1, min(timeout, 10.0))
-    messages = _vortexia_poll_inbox(name, timeout=timeout)
+    messages = [_qualify_relayed_sender(m) for m in _vortexia_poll_inbox(name, timeout=timeout)]
     return {"count": len(messages), "messages": messages}
+
+
+def _qualify_relayed_sender(envelope: dict) -> dict:
+    """A message that crossed vortex-relay names its sender `Name@env` (same rule as
+    bridge/src/envelope.js normalize): a bare name from another Mac can be this
+    agent's own name, and would read — and be answered — as a self-send."""
+    sender, env = envelope.get("from"), envelope.get("routedFrom")
+    if isinstance(sender, str) and sender and "@" not in sender and isinstance(env, str) and env:
+        return {**envelope, "from": f"{sender}@{env}"}
+    return envelope
 
 
 # ── agent mute ────────────────────────────────────────────────────────────────

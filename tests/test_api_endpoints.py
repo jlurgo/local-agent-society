@@ -338,6 +338,14 @@ def test_vortexia_poll_returns_pending_messages(client, app_module, monkeypatch)
     assert resp.json() == {"count": 1, "messages": fake_messages}
 
 
+def test_vortexia_poll_names_a_relayed_sender_with_its_env(client, app_module, monkeypatch):
+    register(client, name="System", path="/tmp/system")
+    relayed = {"from": "System", "to": "System", "text": "hi", "kind": "vortex-relay-delivery", "routedFrom": "uy-mac", "ts": 1}
+    monkeypatch.setattr(app_module, "_vortexia_poll_inbox", lambda name, timeout=2.0: [relayed])
+
+    assert client.get("/agents/System/vortexia/poll").json()["messages"][0]["from"] == "System@uy-mac"
+
+
 # ── agents: mute ─────────────────────────────────────────────────────────────────
 
 def test_mute_unmute_and_status(client):
