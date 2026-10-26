@@ -28,10 +28,8 @@ if [ -f "$PID_FILE" ]; then
 fi
 
 VENV="$SCRIPT_DIR/.venv"
-if [ ! -f "$VENV/bin/pip" ]; then
-    python3 -m venv "$VENV"
-fi
-"$VENV/bin/pip" install -q -r "$SCRIPT_DIR/requirements.txt"
+source "$SCRIPT_DIR/venv.sh"
+ensure_backend_venv "$VENV" "$SCRIPT_DIR/requirements.txt"
 
 cd "$SCRIPT_DIR"
 # VORTEXIA_ENV_NAME intentionally not set here — see serve.sh's comment.

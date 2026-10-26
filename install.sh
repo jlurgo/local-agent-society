@@ -42,12 +42,12 @@ echo "[ 1b/5] Installing bridge dependencies..."
 # ── 2. Python dependencies ────────────────────────────────────────────────────
 echo "[ 2/5 ] Installing Python dependencies..."
 VENV="$INSTALL_DIR/backend/.venv"
-python3 -m venv "$VENV"
+source "$INSTALL_DIR/backend/venv.sh"
 # requirements.txt, not a hand-picked subset — a fresh venv missing
 # paho-mqtt crashes on `import vortexia_client` the moment the backend
 # tries to talk to vortexia (found this bug the same way serve.sh had it,
 # fixed there earlier; this was install.sh's own separate copy of it).
-"$VENV/bin/pip" install -q -r "$INSTALL_DIR/backend/requirements.txt"
+ensure_backend_venv "$VENV" "$INSTALL_DIR/backend/requirements.txt"
 
 # ── 2b. Kokoro TTS model files ───────────────────────────────────────────────
 # The backend synthesizes every widget voice with Kokoro-82M (see

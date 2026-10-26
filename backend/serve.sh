@@ -5,10 +5,8 @@ PORT=8700
 mkdir -p "$SCRIPT_DIR/logs"
 
 VENV="$SCRIPT_DIR/.venv"
-if [ ! -f "$VENV/bin/pip" ]; then
-    python3 -m venv "$VENV"
-fi
-"$VENV/bin/pip" install -q -r "$SCRIPT_DIR/requirements.txt"
+source "$SCRIPT_DIR/venv.sh"
+ensure_backend_venv "$VENV" "$SCRIPT_DIR/requirements.txt"
 
 cd "$SCRIPT_DIR"
 # main.py imports cli.path_utils at module level — needs the repo root on
