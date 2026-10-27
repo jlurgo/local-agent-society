@@ -140,8 +140,12 @@ export class ClaudeChannelSink {
       }
       case REPLY_TOOL: {
         if (!this.send) return { ...text('no sender configured'), isError: true };
+        // A missing or misnamed `text` must fail here, where the model can
+        // retry, not reach the recipient as a blank message.
+        const body = typeof args.text === 'string' ? args.text : '';
+        if (!body.trim()) return { ...text('reply needs a non-empty "text" argument — nothing was sent'), isError: true };
         try {
-          await this.send(String(args.to || ''), String(args.text || ''));
+          await this.send(String(args.to || ''), body);
           return text(`sent to ${args.to}`);
         } catch (err) {
           return { ...text(`send failed: ${err && err.message ? err.message : err}`), isError: true };

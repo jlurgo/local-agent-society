@@ -154,12 +154,15 @@ def test_newlines_in_message_dont_crash():
         fail("newlines in message don't cause 500", f"HTTP {status}")
 
 
-def test_empty_message_accepted():
-    status, _ = post(f"/agents/{RECEIVER_NAME}/inject", {"message": ""})
-    if status == 200:
-        ok("empty message accepted without error")
-    else:
-        fail("empty message accepted without error", f"HTTP {status}")
+def test_empty_message_rejected():
+    # A blank message used to be delivered as an empty event the recipient
+    # couldn't act on; now the sender gets a 422 and knows nothing went out.
+    for msg in ("", "  \n"):
+        status, _ = post(f"/agents/{RECEIVER_NAME}/inject", {"message": msg})
+        if status == 422:
+            ok(f"blank message {msg!r} rejected with 422")
+        else:
+            fail(f"blank message {msg!r} rejected with 422", f"HTTP {status}")
 
 
 def test_oversized_message_rejected():
@@ -260,7 +263,7 @@ def main():
         test_voice_source_returns_ok()
         test_agent_source_returns_ok()
         test_newlines_in_message_dont_crash()
-        test_empty_message_accepted()
+        test_empty_message_rejected()
         test_oversized_message_rejected()
         test_register_sets_presence_online()
         test_message_actually_arrives_via_vortexia()

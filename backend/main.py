@@ -5,7 +5,7 @@ Port: 8700
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 import json
 import os
@@ -481,8 +481,18 @@ class RenameRequest(BaseModel):
 MESSAGE_MAX_CHARS = 1_000_000
 
 
+def _non_blank(message: str) -> str:
+    # A blank message has nothing for the recipient to act on — it used to be
+    # delivered as an empty channel event, and the sender never found out its
+    # text was lost (e.g. a reply call whose text argument was misnamed).
+    if not message.strip():
+        raise ValueError("message is empty")
+    return message
+
+
 class InjectRequest(BaseModel):
     message:     str = Field(max_length=MESSAGE_MAX_CHARS)
+    _message_not_blank = field_validator("message")(_non_blank)
     source:      str           = "voice"   # "voice" | "agent" | "external" | "raw"
     from_agent:  Optional[str] = None
     # `tty` / `queue` are no longer meaningful — delivery is 100% vortexia now
@@ -496,6 +506,7 @@ class SendRequest(BaseModel):
     Exactly one of `to`/`scope` must be set; pydantic doesn't express an
     XOR directly, so send_message() itself enforces it."""
     message:     str = Field(max_length=MESSAGE_MAX_CHARS)
+    _message_not_blank = field_validator("message")(_non_blank)
     to:          Optional[str] = None   # exact id, optionally "name@env"
     scope:       Optional[str] = None   # free-text scope/intent for broadcast
     source:      str           = "agent"

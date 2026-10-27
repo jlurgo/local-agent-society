@@ -89,6 +89,18 @@ test('the reply tool sends through the injected sender and surfaces failures as 
   await sink.stop();
 });
 
+test('the reply tool refuses a missing, misnamed or blank text instead of sending an empty message', async () => {
+  const sent = [];
+  const { sink, client } = await connectedPair({ send: async (to, text) => { sent.push([to, text]); } });
+  for (const args of [{ to: 'Vortexia' }, { to: 'Vortexia', message: 'hi' }, { to: 'Vortexia', text: '  \n' }]) {
+    const res = await client.callTool({ name: REPLY_TOOL, arguments: args });
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /non-empty "text"/);
+  }
+  assert.deepEqual(sent, []);
+  await sink.stop();
+});
+
 test('closing the transport (Claude Code exiting) fires onclose so the bridge can detach the mailbox', async () => {
   const { sink, client } = await connectedPair();
   let closed = false;
