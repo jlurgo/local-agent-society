@@ -29,8 +29,9 @@ const post = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 
 // ── layout (meters / radians) — everything on spheres around your head ─────
 const EYE_Y = 1.25;
 const CLOUD = { r: 1.9, step: 0.2, follow: 0.06, bubbleR: 0.21, margin: 0.05, attract: 14, damp: 5.5, repel: 9, gap: 1.06 };   // sunflower of bubbles: follows the gaze, flows around what is in the middle
-const MOSAIC = { r: 1.85, az: 0.36, el: 0.27, aside: 0.62 };
+const MOSAIC = { r: 1.85, browserW: 0.72, termW: 0.46, gap: 0.05, perRowB: 3, perRowT: 4 };   // a centered grid: browser tabs big on top, terminals smaller below
 const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045;
+let mosaicExtent = { hAz: 0, hEl: 0, top: 0 };
 const THUMB_W = 400, LIVE_W = 1100, SCREEN_W = 1500, SCREEN_W_HI = 2400, SCREEN_WIDTH_M = 1.7, SCREEN_DIST = 1.4, MAX_SCREENS = 3;
 const GOLDEN = Math.PI * (3 - Math.sqrt(5));
 
@@ -153,7 +154,9 @@ function drawTerminal(wid, { rows, cols, text }) {
     const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearMipmapLinearFilter; tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     if (t) t.tex.dispose();
     t = { tex, canvas, aspect: W / H }; termTex.set(wid, t);
-    for (const p of panels) if (p.wid === wid) applyTexture(p.mesh, tex, t.aspect);
+    let relayout = false;
+    for (const p of panels) if (p.wid === wid) { applyTexture(p.mesh, tex, t.aspect, p.w); relayout = true; }
+    if (relayout) { layoutMosaic(); for (const p of panels) placePanel(p); for (const f of flowers.values()) if (f.title) f.title.position.y = mosaicExtent.top + 0.1; }
     for (const sc of screens) if (sc.wid === wid) applyTexture(sc.mesh, tex, t.aspect, SCREEN_WIDTH_M);
   }
   const g = t.canvas.getContext('2d');
@@ -214,8 +217,8 @@ function makeFlower(agent) {
 
 /** The sunflower's center is your gaze (smoothed, both axes). */
 function cloudCenter() { return { az: gazeAz, el: gazeEl }; }
-function mosaicCenter() { return { az: mosaicAz, el: 0 }; }
-let mosaicAz = 0;   // the mosaic stays where the agent was selected (it does not follow the gaze)
+function mosaicCenter() { return { az: mosaicAz, el: mosaicEl }; }
+let mosaicAz = 0, mosaicEl = 0;   // the mosaic opens centered where you look and stays there (it does not follow the gaze)
 
 /** What occupies the middle of the view, as angular boxes around the viewer: open screens, the keyboard, the mosaic. */
 function obstacles() {
@@ -227,7 +230,7 @@ function obstacles() {
     list.push({ az: a.az, el: a.el, hAz: Math.atan((g.width * sc.mesh.scale.x * k / 2) / a.d) + CLOUD.margin, hEl: Math.atan((g.height * sc.mesh.scale.y * k / 2) / a.d) + CLOUD.margin });
   }
   if (keyboard && activeScreen) { const a = angOf(keyboard.group); list.push({ az: a.az, el: a.el - 0.08, hAz: Math.atan(0.6 * root.scale.x / a.d) + CLOUD.margin, hEl: Math.atan(0.22 * root.scale.x / a.d) + CLOUD.margin }); }
-  if (panels.length) { const c = mosaicCenter(), k = panels[0].count <= 4 ? 1 : 1.18; list.push({ az: c.az, el: c.el + 0.03, hAz: MOSAIC.az * k + 0.16, hEl: MOSAIC.el * k + 0.2 }); }
+  if (panels.length) { const c = mosaicCenter(); list.push({ az: c.az, el: c.el + 0.03, hAz: mosaicExtent.hAz, hEl: mosaicExtent.hEl + 0.08 }); }
   return list;
 }
 /** Push a direction out of every obstacle box it falls in, to the box's rim along the line from the box center. */
@@ -254,7 +257,7 @@ function layoutCloud() {
   const c = cloudCenter(), obs = obstacles();
   order.forEach((n, i) => {
     const f = flowers.get(n);
-    if (n === selected) { f.r = MOSAIC.r - 0.05; f.target.copy(onSphere(mosaicCenter().az, 0, f.r)); return; }
+    if (n === selected) { f.r = MOSAIC.r - 0.05; f.target.copy(onSphere(mosaicCenter().az, mosaicCenter().el, f.r)); return; }
     const k = selected ? i : i + 1;                   // with nothing selected, no seed sits dead center
     const rr = CLOUD.step * Math.sqrt(k), th = k * GOLDEN;
     const a = avoid(c.az + rr * Math.cos(th), c.el + rr * Math.sin(th), obs);
@@ -271,7 +274,7 @@ function setSelected(name) {
     if (f.title) { f.group.remove(f.title); disposeObject(f.title); unhover(f.title); f.title = null; }
     if (isSel) {
       const title = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.11), new THREE.MeshBasicMaterial({ map: textTexture(n, { width: 1024, height: 128, bg: f.color, fg: ink(f.color), font: 'bold 64px -apple-system, system-ui, sans-serif', align: 'center' }) }));
-      title.position.set(0, MOSAIC.r * Math.sin(MOSAIC.el) + PANEL_H / 2 + 0.12, 0);
+      title.position.set(0, mosaicExtent.top + 0.1, 0);
       title.userData = { action: 'agent', name: n, label: n };
       f.group.add(title); hoverables.push(title); f.title = title;
     }
@@ -282,12 +285,31 @@ function clearPanels() {
   for (const p of panels) { root.remove(p.mesh); root.remove(p.label); disposeObject(p.mesh); disposeObject(p.label); unhover(p.mesh); }
   panels.length = 0;
 }
+/** Grid offsets (meters, around the mosaic center): browser rows on top, terminal rows below, each row centered. */
+function layoutMosaic() {
+  const bs = panels.filter((p) => p.kind === 'browser'), ts = panels.filter((p) => p.kind !== 'browser');
+  const rows = [];
+  for (let i = 0; i < bs.length; i += MOSAIC.perRowB) rows.push(bs.slice(i, i + MOSAIC.perRowB));
+  for (let i = 0; i < ts.length; i += MOSAIC.perRowT) rows.push(ts.slice(i, i + MOSAIC.perRowT));
+  const sizeOf = (p) => { const g = p.mesh.geometry.parameters; return { w: g.width, h: g.height + LABEL_H + 0.01 }; };
+  const rowH = rows.map((r) => Math.max(...r.map((p) => sizeOf(p).h)));
+  const total = rowH.reduce((a, h) => a + h, 0) + MOSAIC.gap * (rows.length - 1);
+  let y = total / 2, maxW = 0;
+  rows.forEach((row, ri) => {
+    const widths = row.map((p) => sizeOf(p).w), rowW = widths.reduce((a, w) => a + w, 0) + MOSAIC.gap * (row.length - 1);
+    maxW = Math.max(maxW, rowW);
+    let x = -rowW / 2;
+    row.forEach((p, i) => { const { w, h } = sizeOf(p); p.off = { x: x + w / 2, y: y - rowH[ri] / 2, h: p.mesh.geometry.parameters.height }; x += w + MOSAIC.gap; });
+    y -= rowH[ri] + MOSAIC.gap;
+  });
+  mosaicExtent = { hAz: maxW / 2 / MOSAIC.r + 0.06, hEl: total / 2 / MOSAIC.r + 0.06, top: total / 2 };
+}
 function placePanel(p) {
-  const a = -Math.PI / 2 + (p.index / Math.max(p.count, 1)) * Math.PI * 2;
-  const k = p.count <= 4 ? 1 : 1.18, c = mosaicCenter();
-  const az = c.az + Math.cos(a) * MOSAIC.az * k, el = c.el - Math.sin(a) * MOSAIC.el * k;
-  place(p.mesh, az, el, MOSAIC.r);
-  place(p.label, az, el - (PANEL_H / 2 + LABEL_H / 2 + 0.005) / MOSAIC.r, MOSAIC.r);
+  if (!p.off) return;
+  const c = mosaicCenter(), r = MOSAIC.r;
+  const az = c.az + p.off.x / r, el = c.el + p.off.y / r;
+  place(p.mesh, az, el, r);
+  place(p.label, az, el - (p.off.h / 2 + LABEL_H / 2 + 0.005) / r, r);
 }
 function buildMosaic() {
   clearPanels();
@@ -295,17 +317,21 @@ function buildMosaic() {
   if (!f) return;
   const wins = agentWindows(f.agent);
   wins.forEach((win, i) => {
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, PANEL_H), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+    const w = win.kind === 'browser' ? MOSAIC.browserW : MOSAIC.termW;
+    const tt = win.kind === 'terminal' ? termTex.get(win.wid) : null;
+    const h = tt ? w / tt.aspect : w * 9 / 16;
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: 0x000000 }));
     mesh.userData = { action: 'window', wid: win.wid, label: win.title || win.app, kind: win.kind };
     const labelText = win.session ? `${win.session.runtime} — ${win.title}` : (win.title || win.app);
-    const label = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, LABEL_H), new THREE.MeshBasicMaterial({ map: textTexture(labelText, { width: 1024, height: 92, fg: win.kind === 'terminal' ? '#cfe8ff' : '#e8e8e8', font: '30px -apple-system, system-ui, sans-serif' }), transparent: true }));
+    const label = new THREE.Mesh(new THREE.PlaneGeometry(w, LABEL_H), new THREE.MeshBasicMaterial({ map: textTexture(labelText, { width: 1024, height: 92, fg: win.kind === 'terminal' ? '#cfe8ff' : '#e8e8e8', font: '30px -apple-system, system-ui, sans-serif' }), transparent: true }));
     root.add(mesh); root.add(label); hoverables.push(mesh);
-    const p = { mesh, label, wid: win.wid, kind: win.kind, loading: false, at: 0, index: i, count: wins.length };
-    const tt = win.kind === 'terminal' ? termTex.get(win.wid) : null;
+    const p = { mesh, label, wid: win.wid, kind: win.kind, w, loading: false, at: 0, index: i, count: wins.length };
     if (tt) applyTexture(mesh, tt.tex, tt.aspect);
-    placePanel(p);
     panels.push(p);
   });
+  layoutMosaic();
+  for (const p of panels) placePanel(p);
+  for (const f of flowers.values()) if (f.title) f.title.position.y = mosaicExtent.top + 0.1;
 }
 function placeMosaic() { for (const p of panels) placePanel(p); }
 
@@ -324,7 +350,7 @@ function buildWorld() {
 function agentWindowsAll() { const s = new Set(); if (world) for (const d of world.displays) for (const sp of d.spaces) for (const w of sp.windows) s.add(w.wid); return s; }
 
 function select(name) {
-  mosaicAz = gazeAz;
+  mosaicAz = headYaw; mosaicEl = THREE.MathUtils.clamp(headPitch, -0.4, 0.4);
   setSelected(selected === name ? null : name);
   buildMosaic();
 }
