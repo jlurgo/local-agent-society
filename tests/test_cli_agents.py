@@ -265,3 +265,18 @@ def test_agent_listen_mechanically_and_silently_answers_the_mic_selftest_ping_wi
     # Mailbox model: the listener never clears a retained slot (an empty
     # retained publish) — every publish it makes carries a real payload.
     assert all(call["payload"] for call in created_clients[-1].published), created_clients[-1].published
+
+
+def test_agent_new_is_what_writes_las_agent_json(monkeypatch, tmp_path):
+    """install.sh no longer creates any .las-agent.json (d044934): creating an
+    agent is the one place the file comes from, so `las agent new` must write it."""
+    posts = []
+    monkeypatch.setattr(agents_mod.api, "post", lambda path, data=None: posts.append(path) or {})
+    monkeypatch.setattr(agents_mod.subprocess, "run", lambda *a, **k: None)
+
+    result = CliRunner().invoke(agents_mod.new, ["Fresh", "--voice", "Paulina", "--dir", str(tmp_path / "fresh")])
+
+    assert result.exit_code == 0, result.output
+    config = json.loads((tmp_path / "fresh" / ".las-agent.json").read_text())
+    assert config["name"] == "Fresh" and config["voice"] == "Paulina"
+    assert "/agents" in posts
