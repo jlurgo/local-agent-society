@@ -17,9 +17,13 @@
  * Decisions (what a click means) are main.js's — the bubble only reports
  * them (`bubble:action` from bubble-preload.js) and this module routes them
  * to the `onAction` callback with the agent's name:
- *   open   — the body was clicked: go to that agent (its Space)
- *   voice  — answer by voice: go there and start a dictation
- *   reply  — answer by text: { text }
+ *   open       — the body was clicked: go to that agent (its Space)
+ *   voice      — answer by voice: the agent's widget starts a dictation
+ *                (unseen, on its own Space); the bubble stays, becomes the
+ *                face of that dictation (micStatus) and shows its phases
+ *   mic-stop   — stop the dictation and send it
+ *   mic-cancel — stop it and send nothing
+ *   reply      — answer by text: { text }
  *   dismiss, pin { on }, size { height } — housekeeping, handled here
  */
 const { BrowserWindow, screen } = require('electron');
@@ -134,7 +138,7 @@ function createBubbles({ sources, log, onAction }) {
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-    const b = { win, agentName, side, displayId, height: BUBBLE_MIN_HEIGHT, timer: null, pinned: false };
+    const b = { win, agentName, side, displayId, height: BUBBLE_MIN_HEIGHT, timer: null, pinned: false, voice: false, closing: false };
     bubbles.push(b);
     win.loadFile(path.join(sources.bubbleDir, 'bubble.html'), {
       query: { agent: agentName, text, color, opacity: String(opacity), side },
@@ -169,8 +173,17 @@ function createBubbles({ sources, log, onAction }) {
       case 'dismiss':
         close(b);
         return;
-      case 'open':
       case 'voice':
+        b.voice = true;          // from now on this bubble shows the dictation
+        b.pinned = true;
+        armTimer(b);
+        onAction(kind, b.agentName, payload);
+        return;
+      case 'mic-stop':
+      case 'mic-cancel':
+        onAction(kind, b.agentName, payload);
+        return;
+      case 'open':
       case 'reply':
         onAction(kind, b.agentName, payload);
         close(b);
@@ -180,11 +193,36 @@ function createBubbles({ sources, log, onAction }) {
     }
   }
 
+  /**
+   * A widget's dictation phase, for the bubble(s) of that agent that asked
+   * for it (`voice`): shown in place; the bubble holds while listening or
+   * transcribing, closes shortly after 'sent', stays (and resumes its
+   * timer) after 'failed' or 'cancelled'.
+   */
+  function micStatus(agentName, state, detail) {
+    for (const b of bubbles) {
+      if (b.agentName !== agentName || !b.voice || b.closing || b.win.isDestroyed()) continue;
+      b.win.webContents.send('bubble:mic', state, detail || null);
+      if (state === 'listening' || state === 'transcribing') {
+        b.pinned = true;
+        armTimer(b);
+      } else if (state === 'sent') {
+        b.closing = true;
+        clearTimeout(b.timer);
+        b.timer = setTimeout(() => close(b), 1500);
+      } else if (state === 'failed' || state === 'cancelled') {
+        b.voice = false;
+        b.pinned = false;
+        armTimer(b);
+      }
+    }
+  }
+
   function closeAll() {
     for (const b of [...bubbles]) close(b);
   }
 
-  return { show, handle, closeAll, count: () => bubbles.length };
+  return { show, handle, micStatus, closeAll, count: () => bubbles.length };
 }
 
 module.exports = { createBubbles, stackPositions, BUBBLE_WIDTH, BUBBLE_TTL_MS, BUBBLE_MAX_PER_STACK };

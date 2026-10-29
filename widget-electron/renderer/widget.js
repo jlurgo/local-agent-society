@@ -1082,12 +1082,21 @@ const MAX_RECORDING_MS = 5400000; // 90 min safety net if the user forgets to cl
 let mediaRecorder = null;
 let recordedChunks = [];
 let micState = 'idle'; // 'idle' | 'listening' | 'transcribing'
+let discardRecording = false; // a bubble's cancel: stop, throw the audio away, send nothing
 let maxDurationTimer = null;
 let countdownTimers = [];
+
+// The phases of a dictation, for whoever asked for it from outside this
+// window — a speech bubble (main.js → bubbles.js) shows them in place:
+// listening / transcribing / sent {text} / failed {error} / cancelled / idle.
+function reportMic(state, detail) {
+  window.las.micStatus(agentName, state, detail || null);
+}
 
 function setMicState(next) {
   if ((next === 'listening') !== (micState === 'listening')) window.las.setMicRecording(agentName, next === 'listening');
   micState = next;
+  reportMic(next);
   micEl.classList.toggle('active', next === 'listening');
   micEl.classList.toggle('busy', next === 'transcribing');
   if (next === 'listening') {
@@ -1313,6 +1322,14 @@ async function stopRecordingAndTranscribe() {
     recorder.stop();
   });
   recorder.stream.getTracks().forEach((track) => track.stop());
+  if (discardRecording) {
+    discardRecording = false;
+    recordedChunks = [];
+    window.las.log('info', 'mic', 'cancelled — audio discarded, nothing sent');
+    setMicState('idle');
+    reportMic('cancelled');
+    return;
+  }
 
   if (!recordedChunks.length) {
     window.las.log('warn', 'mic', 'stop: no audio chunks recorded — nothing to transcribe');
@@ -1361,20 +1378,25 @@ async function stopRecordingAndTranscribe() {
       // own `sessions.target` in its .las-agent.json, applied by the
       // backend when it routes the send (docs/adr/0005).
       const sendResult = await window.las.sendToSelf(agentName, result.text);
+      if (sendResult && sendResult.ok) reportMic('sent', { text: result.text });
       if (!sendResult || !sendResult.ok) {
         window.las.log('error', 'mic', `failed to publish dictation to own inbox: ${sendResult && sendResult.error}`);
+        reportMic('failed', { error: `not delivered: ${sendResult && sendResult.error}` });
         console.warn('[widget] mic: failed to publish dictation to own inbox:', sendResult && sendResult.error);
       } else if (sendResult.fallback_from) {
         window.las.log('warn', 'mic', `target ${sendResult.fallback_from} is not connected — the dictation went to the last-used session`);
       }
     } else if (result && !result.ok) {
       window.las.log('error', 'mic', `transcription failed: ${result.error}`);
+      reportMic('failed', { error: `transcription failed: ${result.error}` });
       console.warn('[widget] mic: transcription failed:', result.error);
     } else {
       window.las.log('warn', 'mic', 'transcription returned ok but empty text — nothing published');
+      reportMic('failed', { error: 'nothing heard' });
     }
   } catch (err) {
     window.las.log('error', 'mic', `transcription pipeline failed: ${err && err.stack ? err.stack : err}`);
+    reportMic('failed', { error: String(err && err.message ? err.message : err) });
     console.warn('[widget] mic: transcription pipeline failed:', err);
   } finally {
     setMicState('idle');
@@ -1424,11 +1446,22 @@ micEl.addEventListener('click', (e) => {
   }, 220);
 });
 
-// A speech bubble's "answer by voice" (main.js onBubbleAction): main has
-// just focused this widget (switching to its Space); start listening as if
-// the mic button had been clicked. Never interrupts a recording in flight.
-window.las.onMicRequest(() => {
-  if (micState === 'idle') startRecording();
+// A speech bubble's "answer by voice" (main.js onBubbleAction) drives this
+// widget's mic from afar — the widget stays on its own Space, the bubble is
+// the face of the dictation (reportMic above): 'start' as if the mic button
+// had been clicked (never interrupting a recording in flight), 'stop' =
+// stop and send, 'cancel' = stop and throw the audio away.
+window.las.onMicRequest((command) => {
+  if (command === 'stop') {
+    if (micState === 'listening') stopRecordingAndTranscribe();
+  } else if (command === 'cancel') {
+    if (micState === 'listening') {
+      discardRecording = true;
+      stopRecordingAndTranscribe();
+    }
+  } else if (micState === 'idle') {
+    startRecording();
+  }
 });
 micEl.addEventListener('dblclick', () => {
   if (micClickTimer) {

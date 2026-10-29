@@ -323,8 +323,11 @@ after 20 s unless the pointer is over one or a text answer is open.
 
 - **Click the text** → macOS switches to that agent's Space (its widget is
   focused).
-- **🎤 Voice** → same, and the widget starts a dictation as if its mic
-  button had been clicked (the mic button stops it).
+- **🎤 Voice** → the agent's widget starts a dictation where it is, unseen
+  (no Space switch), and the bubble becomes its face: a pulsing dot and the
+  elapsed time while recording, **■** stops and sends, **✕** cancels and
+  sends nothing, then "Transcribing…" and "Sent: …" (or the failure), and
+  the bubble closes itself.
 - **⌨ Text** → an input in the bubble; Enter sends. The answer takes the
   exact path of a dictation (from the agent, to the agent, source human),
   so the agent's `sessions.target` decides which session gets it.

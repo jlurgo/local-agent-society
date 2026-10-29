@@ -146,9 +146,13 @@ contextBridge.exposeInMainWorld('las', {
    * any window is recording now (the app-wide mic gate, main.js). */
   setMicRecording: (name, recording) => ipcRenderer.invoke('mic:recording', name, recording),
 
-  /** A speech bubble's "answer by voice" asked this widget to start a
-   * dictation (main.js onBubbleAction) — same as a click on the mic button. */
-  onMicRequest: (cb) => ipcRenderer.on('mic:request', () => cb()),
+  /** A speech bubble drives this widget's dictation (main.js onBubbleAction):
+   * command 'start' (same as a click on the mic button), 'stop' (stop and
+   * send) or 'cancel' (stop, send nothing). */
+  onMicRequest: (cb) => ipcRenderer.on('mic:request', (_event, command) => cb(command || 'start')),
+  /** The phases of this widget's dictation, for the bubble that asked for
+   * it: listening / transcribing / sent {text} / failed {error} / cancelled / idle. */
+  micStatus: (name, state, detail) => ipcRenderer.send('mic:status', name, state, detail),
 
   /** The app-wide mic gate changed: `held` = some window is recording, so
    * nothing may speak. @param {(held: boolean) => void} cb */

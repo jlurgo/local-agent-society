@@ -102,6 +102,21 @@
       color: #111;
       user-select: text;
     }
+    /* Voice mode: the head circles give way to the dictation row — a red
+       dot that pulses while listening, the elapsed time, stop-and-send and
+       cancel circles (always visible: this is the feedback). */
+    .mic { display: none; align-items: center; gap: 8px; padding: 0 12px 10px; }
+    body.voice .mic { display: flex; }
+    body.voice .head .circles { display: none; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #d33; flex-shrink: 0; }
+    body.listening .dot { animation: pulse 1s ease-in-out infinite; }
+    body.transcribing .dot { background: #e8a500; }
+    body.sent .dot { background: #2f9e44; }
+    body.failed .dot { background: #666; }
+    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.75); } }
+    .mic .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mic .time { font-variant-numeric: tabular-nums; opacity: 0.8; }
+    .mic .circles { opacity: 1; }
     body.dark { --bubble-ink: #f4f4f4; }
     body.dark .circle { border-color: rgba(255, 255, 255, 0.6); color: #f4f4f4; background: rgba(0, 0, 0, 0.22); }
     body.dark .reply input { background: rgba(0, 0, 0, 0.35); color: #fff; }
@@ -120,6 +135,15 @@
     <div class="body" id="text" title="Go to this agent"></div>
     <div class="reply">
       <input id="input" type="text" placeholder="Answer… (Enter sends)" autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="mic">
+      <span class="dot"></span>
+      <span class="label" id="micLabel">Starting the mic…</span>
+      <span class="time" id="micTime"></span>
+      <div class="circles">
+        <button class="circle" id="micSend" title="Stop and send">■</button>
+        <button class="circle" id="micCancel" title="Cancel, send nothing">✕</button>
+      </div>
     </div>
   </div>
   <script>
@@ -161,7 +185,53 @@
 
     document.getElementById('dismiss').addEventListener('click', (e) => { e.stopPropagation(); act('dismiss'); });
     document.getElementById('text').addEventListener('click', () => act('open'));
-    document.getElementById('voice').addEventListener('click', () => act('voice'));
+    // Voice: the agent's widget records and transcribes from its own Space;
+    // this bubble is the face of that dictation (bubble:mic from main).
+    const micLabel = document.getElementById('micLabel');
+    const micTime = document.getElementById('micTime');
+    let micStart = 0;
+    let micTick = null;
+    const setMic = (state) => {
+      document.body.classList.remove('listening', 'transcribing', 'sent', 'failed');
+      if (state) document.body.classList.add(state);
+    };
+    const fmt = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`;
+    document.getElementById('voice').addEventListener('click', () => {
+      document.body.classList.add('voice');
+      micLabel.textContent = 'Starting the mic…';
+      act('voice');
+    });
+    document.getElementById('micSend').addEventListener('click', () => { micLabel.textContent = 'Stopping…'; act('mic-stop'); });
+    document.getElementById('micCancel').addEventListener('click', () => act('mic-cancel'));
+    window.bubble.onMic((state, detail) => {
+      if (state === 'listening') {
+        setMic('listening');
+        micStart = Date.now();
+        micLabel.textContent = 'Recording — ■ to send';
+        clearInterval(micTick);
+        micTick = setInterval(() => { micTime.textContent = fmt(Date.now() - micStart); }, 500);
+        micTime.textContent = '0:00';
+      } else if (state === 'transcribing') {
+        setMic('transcribing');
+        clearInterval(micTick);
+        micLabel.textContent = 'Transcribing…';
+      } else if (state === 'sent') {
+        setMic('sent');
+        clearInterval(micTick);
+        micLabel.textContent = `Sent: ${(detail && detail.text) || ''}`;
+        micTime.textContent = '';
+      } else if (state === 'failed') {
+        setMic('failed');
+        clearInterval(micTick);
+        micLabel.textContent = `Failed — ${(detail && detail.error) || 'unknown'}`;
+        micTime.textContent = '';
+      } else if (state === 'cancelled') {
+        clearInterval(micTick);
+        setMic(null);
+        document.body.classList.remove('voice');
+        micTime.textContent = '';
+      }
+    });
     document.getElementById('textBtn').addEventListener('click', () => {
       replying = true;
       document.body.classList.add('replying');

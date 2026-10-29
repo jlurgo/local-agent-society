@@ -1418,12 +1418,15 @@ function focusWidget(name) {
 
 function onBubbleAction(kind, name, payload) {
   payload = payload || {};
+  const win = windows.get(name);
   if (kind === 'open') {
     focusWidget(name);
-  } else if (kind === 'voice') {
-    focusWidget(name);
-    const win = windows.get(name);
-    if (win && !win.isDestroyed()) win.webContents.send('mic:request');
+  } else if (kind === 'voice' || kind === 'mic-stop' || kind === 'mic-cancel') {
+    // The widget records, transcribes and sends from its own Space, unseen;
+    // the bubble shows the phases (mic:status below). No Space switch.
+    const command = kind === 'voice' ? 'start' : kind === 'mic-stop' ? 'stop' : 'cancel';
+    if (win && !win.isDestroyed()) win.webContents.send('mic:request', command);
+    else if (bubbles) bubbles.micStatus(name, 'failed', { error: 'widget not open' });
   } else if (kind === 'reply') {
     const text = typeof payload.text === 'string' ? payload.text.trim() : '';
     if (!text) return;
@@ -1435,6 +1438,11 @@ function onBubbleAction(kind, name, payload) {
 
 ipcMain.on('bubble:action', (event, kind, payload) => {
   if (bubbles) bubbles.handle(event, kind, payload);
+});
+
+// A widget's dictation phases (renderer reportMic) → the bubble that asked.
+ipcMain.on('mic:status', (_event, name, state, detail) => {
+  if (bubbles) bubbles.micStatus(name, state, detail);
 });
 
 // ── face buttons: this agent's voice + locale (for mic STT + TTS pickVoice) ─
