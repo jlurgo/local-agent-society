@@ -1,58 +1,172 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * las-spaces — phase 0: serves the headset app (spaces/xr) and takes its
- * reports. Reached from the Quest as http://localhost:PORT over the USB
- * tunnel (`adb reverse tcp:PORT tcp:PORT`): a secure context for WebXR
- * without certificates. The port comes from the LAS registry
- * (`las ports claim las-spaces`). See docs/plans/2026-10-29-quest-spaces.md.
+ * las-spaces — the world model of this Mac's Spaces, windows and LAS agents,
+ * its windows' pixels, and the commands to go places; served to a flat page
+ * (spaces/xr/world.html, any browser on the Mac) and to the headset app
+ * (spaces/xr/, reached as http://localhost:PORT over `adb reverse`).
+ * Port from the LAS registry (`las ports claim las-spaces`). No deps beyond
+ * koffi + sharp (lib/deps.js). See docs/plans/2026-10-29-quest-spaces.md.
+ *
+ *   GET  /world                      the world (JSON); also pushed over /ws as {type:'world'} when it changes
+ *   GET  /thumb/:wid?w=480           the window's pixels (JPEG), ~1.5 s cache
+ *   POST /space/:id/activate         switch the Mac to that Space
+ *   POST /window/:wid/focus          bring that window to the front (switches Space too)
+ *   POST /hello                      a report from the headset page (logged)
+ *   WS   /ws                         world pushes; text frames in are logged
  */
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
+const { execFile } = require('node:child_process');
+const mac = require('./lib/mac');
+const { buildWorld } = require('./lib/world');
 
 const PORT = Number(process.env.LAS_SPACES_PORT || process.argv[2] || 9002);
 const XR_DIR = path.join(__dirname, 'xr');
 const LOG_PATH = path.join(__dirname, '..', 'session', 'spaces.log');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg' };
+const WORLD_TICK_MS = 1000;
+const THUMB_TTL_MS = 1500;
 
-function log(component, message) {
-  const line = `[${new Date().toISOString()}] INFO  [${component}] ${message}\n`;
+function log(level, component, message) {
+  const line = `[${new Date().toISOString()}] ${level.padEnd(5)} [${component}] ${message}\n`;
   process.stdout.write(line);
   try { fs.appendFileSync(LOG_PATH, line); } catch { /* best effort */ }
 }
+const info = (c, m) => log('INFO', c, m);
+const warn = (c, m) => log('WARN', c, m);
 
-const server = http.createServer((req, res) => {
-  log('http', `${req.method} ${req.url} from ${req.socket.remoteAddress}`);
-  if (req.method === 'POST' && req.url === '/hello') {
+// ── world: rebuilt every tick, pushed when it changed ──────────────────────
+let world = { at: 0, displays: [], agents: [] };
+let worldKey = '';
+let building = false;
+async function tickWorld() {
+  if (building) return;
+  building = true;
+  try {
+    const next = await buildWorld();
+    const key = JSON.stringify({ d: next.displays, a: next.agents });
+    world = next;
+    if (key !== worldKey) {
+      worldKey = key;
+      broadcast({ type: 'world', world });
+    }
+  } catch (err) {
+    warn('world', `build failed: ${err && err.message ? err.message : err}`);
+  } finally {
+    building = false;
+  }
+}
+
+// ── thumbnails: one capture per window per TTL, never two of the same at once ──
+const thumbs = new Map();   // key → { at, promise }
+function thumb(wid, w) {
+  const key = `${wid}:${w}`;
+  const c = thumbs.get(key);
+  const now = Date.now();
+  if (c && now - c.at < THUMB_TTL_MS) return c.promise;
+  const promise = mac.captureWindow(wid, { maxWidth: w }).catch((err) => { warn('thumb', `${wid}: ${err && err.message ? err.message : err}`); return null; });
+  thumbs.set(key, { at: now, promise });
+  if (thumbs.size > 400) thumbs.delete(thumbs.keys().next().value);
+  return promise;
+}
+
+// ── commands ───────────────────────────────────────────────────────────────
+function osascript(lines) {
+  return new Promise((resolve) => {
+    execFile('osascript', lines.flatMap((l) => ['-e', l]), { timeout: 8000 }, (err, stdout, stderr) => resolve({ ok: !err, stdout: String(stdout).trim(), stderr: String(stderr || (err && err.message) || '').trim() }));
+  });
+}
+
+/** Switch to a Space: ctrl+←/→ as many times as the Mission Control distance (the default macOS shortcuts). */
+async function activateSpace(id) {
+  const d = world.displays.find((x) => x.spaces.some((s) => s.id === id));
+  if (!d) return { ok: false, error: 'unknown space' };
+  const from = d.spaces.findIndex((s) => s.id === d.current);
+  const to = d.spaces.findIndex((s) => s.id === id);
+  if (from === -1 || to === -1) return { ok: false, error: 'no current space' };
+  if (from === to) return { ok: true, steps: 0 };
+  const keyCode = to > from ? 124 : 123;   // → / ←
+  const steps = Math.abs(to - from);
+  const script = [`tell application "System Events"`, ...Array.from({ length: steps }, () => `key code ${keyCode} using control down\ndelay 0.25`), 'end tell'];
+  const r = await osascript([script.join('\n')]);
+  info('space', `activate ${id}: ${from} → ${to} (${steps} step${steps === 1 ? '' : 's'}) ${r.ok ? 'ok' : 'FAILED ' + r.stderr}`);
+  return r.ok ? { ok: true, steps } : { ok: false, error: r.stderr };
+}
+
+/** Bring a window to the front via System Events (AXRaise + frontmost): switches Space as a side effect. */
+async function focusWindow(wid) {
+  let win = null;
+  for (const d of world.displays) for (const s of d.spaces) for (const w of s.windows) if (w.wid === wid) win = w;
+  if (!win) return { ok: false, error: 'unknown window' };
+  const esc = (s) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const r = await osascript([
+    `tell application "System Events"\n  tell (first process whose unix id is ${win.pid || 0})\n    set frontmost to true\n    try\n      perform action "AXRaise" of (first window whose name is "${esc(win.title)}")\n    end try\n  end tell\nend tell`,
+  ]);
+  info('window', `focus ${wid} "${win.title.slice(0, 40)}" (${win.app}) ${r.ok ? 'ok' : 'FAILED ' + r.stderr}`);
+  return r.ok ? { ok: true } : { ok: false, error: r.stderr };
+}
+
+// ── http ───────────────────────────────────────────────────────────────────
+function json(res, code, body) {
+  res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(JSON.stringify(body));
+}
+function readBody(req) {
+  return new Promise((resolve) => {
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 65536) req.destroy(); });
-    req.on('end', () => {
-      log('hello', body.replace(/\s+/g, ' ').slice(0, 1000));
-      res.writeHead(204).end();
-    });
-    return;
+    req.on('end', () => resolve(body));
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://x');
+  const p = url.pathname;
+  let m;
+  if (req.method === 'GET' && p === '/world') return json(res, 200, world);
+  if (req.method === 'GET' && (m = /^\/thumb\/(\d+)$/.exec(p))) {
+    const w = Math.max(64, Math.min(1600, Number(url.searchParams.get('w')) || 480));
+    const r = await thumb(Number(m[1]), w);
+    if (!r) return json(res, 404, { error: 'no image' });
+    res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'no-store', 'x-size': `${r.width}x${r.height}`, 'x-source': `${r.srcWidth}x${r.srcHeight}` });
+    return res.end(r.jpeg);
   }
-  const rel = req.url === '/' ? '/index.html' : decodeURIComponent(req.url.split('?')[0]);
+  if (req.method === 'POST' && (m = /^\/space\/(\d+)\/activate$/.exec(p))) return json(res, 200, await activateSpace(m[1]));
+  if (req.method === 'POST' && (m = /^\/window\/(\d+)\/focus$/.exec(p))) return json(res, 200, await focusWindow(Number(m[1])));
+  if (req.method === 'POST' && p === '/hello') {
+    info('hello', (await readBody(req)).replace(/\s+/g, ' ').slice(0, 1000));
+    return res.writeHead(204).end();
+  }
+  const rel = p === '/' ? '/index.html' : decodeURIComponent(p);
   const file = path.normalize(path.join(XR_DIR, rel));
-  if (!file.startsWith(XR_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-    res.writeHead(404).end('not found');
-    return;
-  }
+  if (!file.startsWith(XR_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end('not found');
   res.writeHead(200, { 'content-type': TYPES[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' });
   fs.createReadStream(file).pipe(res);
 });
 
-// Minimal WebSocket (RFC 6455, text frames, no deps): the headset keeps one
-// open from page load; phase 0 uses it to learn whether a socket opened
-// BEFORE entering VR keeps working inside the immersive session (fetch did
-// not, 2026-10-29).
-const crypto = require('node:crypto');
+// ── minimal WebSocket (RFC 6455, text frames, no deps) ─────────────────────
+const sockets = new Set();
+function frame(text) {
+  const payload = Buffer.from(text, 'utf8');
+  const len = payload.length;
+  const head = len < 126 ? Buffer.from([0x81, len]) : len < 65536 ? Buffer.from([0x81, 126, len >> 8, len & 255]) : Buffer.concat([Buffer.from([0x81, 127]), (() => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(len)); return b; })()]);
+  return Buffer.concat([head, payload]);
+}
+function broadcast(obj) {
+  if (!sockets.size) return;
+  const f = frame(JSON.stringify(obj));
+  for (const s of sockets) s.write(f);
+}
 server.on('upgrade', (req, socket) => {
   if (req.url !== '/ws') { socket.destroy(); return; }
   const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-  log('ws', `open from ${socket.remoteAddress}`);
+  sockets.add(socket);
+  info('ws', `open from ${socket.remoteAddress} (${sockets.size} client${sockets.size === 1 ? '' : 's'})`);
+  socket.write(frame(JSON.stringify({ type: 'world', world })));
   let buf = Buffer.alloc(0);
   socket.on('data', (chunk) => {
     buf = Buffer.concat([buf, chunk]);
@@ -67,13 +181,18 @@ server.on('upgrade', (req, socket) => {
       const payload = Buffer.from(buf.subarray(off, off + len));
       if (mask) for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
       buf = buf.subarray(off + len);
-      if (op === 8) { log('ws', 'close'); socket.end(); return; }
+      if (op === 8) { socket.end(); return; }
       if (op === 9) { socket.write(Buffer.concat([Buffer.from([0x8a, payload.length]), payload])); continue; }
-      if (op === 1 && fin) log('ws', payload.toString('utf8').replace(/\s+/g, ' ').slice(0, 1000));
+      if (op === 1 && fin) info('ws', payload.toString('utf8').replace(/\s+/g, ' ').slice(0, 1000));
     }
   });
-  socket.on('error', (e) => log('ws', `error ${e.message}`));
-  socket.on('close', () => log('ws', 'closed'));
+  const drop = () => { sockets.delete(socket); };
+  socket.on('error', drop);
+  socket.on('close', drop);
 });
 
-server.listen(PORT, '127.0.0.1', () => log('server', `las-spaces phase 0 listening on http://127.0.0.1:${PORT} (xr dir ${XR_DIR})`));
+server.listen(PORT, '127.0.0.1', () => {
+  info('server', `las-spaces listening on http://127.0.0.1:${PORT} (xr dir ${XR_DIR})`);
+  tickWorld();
+  setInterval(tickWorld, WORLD_TICK_MS);
+});

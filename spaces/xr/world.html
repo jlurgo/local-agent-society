@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LAS Spaces — world</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #141414; color: #e8e8e8; }
+    header { position: sticky; top: 0; background: #1c1c1c; padding: 10px 16px; display: flex; gap: 16px; align-items: center; border-bottom: 1px solid #2a2a2a; z-index: 2; }
+    header .dot { width: 10px; height: 10px; border-radius: 50%; background: #666; }
+    header .dot.on { background: #4caf50; }
+    #spaces { display: flex; gap: 14px; padding: 14px; overflow-x: auto; align-items: flex-start; }
+    .space { flex: 0 0 420px; background: #1e1e1e; border: 2px solid #2a2a2a; border-radius: 14px; overflow: hidden; }
+    .space.current { border-color: #4f8cff; box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.25); }
+    .space .head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; background: #232323; }
+    .space .head:hover { background: #2c2c2c; }
+    .space .idx { opacity: 0.55; font-variant-numeric: tabular-nums; }
+    .agent { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 12px; font-weight: 700; color: #141414; }
+    .agent .st { width: 8px; height: 8px; border-radius: 50%; background: rgba(0,0,0,0.35); }
+    .empty { opacity: 0.5; font-size: 13px; }
+    .group { padding: 6px 12px 10px; }
+    .group h4 { margin: 6px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.55; }
+    .win { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; cursor: pointer; }
+    .win img { width: 100%; border-radius: 8px; background: #000; display: block; aspect-ratio: 16 / 9; object-fit: cover; }
+    .win:hover img { outline: 2px solid #4f8cff; }
+    .win .t { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.85; }
+    .win .s { font-size: 11px; opacity: 0.6; }
+    .win .s b { color: #fff; }
+    .others { font-size: 12px; opacity: 0.6; padding: 0 12px 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>LAS Spaces</strong>
+    <span><span class="dot" id="dot"></span> <span id="conn">connecting…</span></span>
+    <span id="summary"></span>
+    <span style="opacity:.6;font-size:13px">click a Space header to go there · click a window to focus it</span>
+  </header>
+  <div id="spaces"></div>
+  <script>
+    const spacesEl = document.getElementById('spaces');
+    const conn = document.getElementById('conn'), dot = document.getElementById('dot'), summary = document.getElementById('summary');
+    let world = null;
+    const post = (p) => fetch(p, { method: 'POST' }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));
+
+    function render() {
+      if (!world) return;
+      const d = world.displays[0];
+      if (!d) return;
+      const agents = Object.fromEntries(world.agents.map((a) => [a.name, a]));
+      summary.textContent = `${d.spaces.length} Spaces · ${world.agents.length} agents · ${d.spaces.reduce((n, s) => n + s.windows.length, 0)} windows`;
+      const seen = new Set();
+      for (const s of d.spaces) {
+        seen.add(s.id);
+        let card = document.getElementById('space-' + s.id);
+        if (!card) {
+          card = document.createElement('div'); card.className = 'space'; card.id = 'space-' + s.id;
+          spacesEl.appendChild(card);
+        }
+        card.classList.toggle('current', s.current);
+        const key = JSON.stringify({ a: s.agents, w: s.windows.map((w) => [w.wid, w.title, w.session && w.session.sid]), i: s.index });
+        if (card.dataset.key === key) continue;
+        card.dataset.key = key;
+        const terms = s.windows.filter((w) => w.kind === 'terminal'), browsers = s.windows.filter((w) => w.kind === 'browser'), others = s.windows.filter((w) => w.kind === 'other');
+        const badge = (name) => { const a = agents[name] || {}; return `<span class="agent" style="background:${a.color || '#90c060'}"><span class="st"></span>${name}</span>`; };
+        const win = (w) => `<div class="win" data-wid="${w.wid}" title="${esc(w.title)}"><img data-wid="${w.wid}" alt="" /><div class="t">${esc(w.title || w.app)}</div>${w.session ? `<div class="s"><b>${esc(w.session.agent)}</b> · ${esc(w.session.runtime)}</div>` : `<div class="s">${esc(w.app)}</div>`}</div>`;
+        card.innerHTML = `
+          <div class="head" data-space="${s.id}"><span class="idx">#${s.index + 1}</span>${s.agents.length ? s.agents.map(badge).join(' ') : '<span class="empty">no agent</span>'}${s.current ? '<span style="margin-left:auto;color:#4f8cff">● here</span>' : ''}</div>
+          ${terms.length ? `<div class="group"><h4>Terminals</h4>${terms.map(win).join('')}</div>` : ''}
+          ${browsers.length ? `<div class="group"><h4>Browser windows</h4>${browsers.map(win).join('')}</div>` : ''}
+          ${others.length ? `<div class="others">${others.length} other window${others.length === 1 ? '' : 's'}: ${esc(others.map((w) => w.app).filter((v, i, a) => a.indexOf(v) === i).join(', '))}</div>` : ''}`;
+        // Move the card to its Mission Control position.
+        const cards = [...spacesEl.children];
+        if (cards.indexOf(card) !== s.index) spacesEl.insertBefore(card, cards[s.index] || null);
+      }
+      for (const card of [...spacesEl.children]) if (!seen.has(card.id.slice(6))) card.remove();
+      refreshThumbs();
+    }
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+    // Thumbnails: only for images on screen, every 3 s, each at most once in flight.
+    const visible = new Set();
+    const io = new IntersectionObserver((entries) => { for (const e of entries) { if (e.isIntersecting) visible.add(e.target); else visible.delete(e.target); } });
+    function refreshThumbs() {
+      for (const img of document.querySelectorAll('img[data-wid]')) if (!img.dataset.observed) { img.dataset.observed = '1'; io.observe(img); }
+    }
+    setInterval(() => {
+      for (const img of visible) {
+        if (img.dataset.loading) continue;
+        img.dataset.loading = '1';
+        const next = new Image();
+        next.onload = () => { img.src = next.src; delete img.dataset.loading; };
+        next.onerror = () => { delete img.dataset.loading; };
+        next.src = `/thumb/${img.dataset.wid}?w=400&t=${Date.now()}`;
+      }
+    }, 3000);
+
+    spacesEl.addEventListener('click', async (e) => {
+      const head = e.target.closest('.head'), win = e.target.closest('.win');
+      if (win) { const r = await post(`/window/${win.dataset.wid}/focus`); if (!r.ok) alert('focus failed: ' + r.error); return; }
+      if (head) { const r = await post(`/space/${head.dataset.space}/activate`); if (!r.ok) alert('switch failed: ' + r.error); }
+    });
+
+    function connect() {
+      const ws = new WebSocket(`ws://${location.host}/ws`);
+      ws.onopen = () => { conn.textContent = 'live'; dot.classList.add('on'); };
+      ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.type === 'world') { world = d.world; render(); } };
+      ws.onclose = () => { conn.textContent = 'reconnecting…'; dot.classList.remove('on'); setTimeout(connect, 2000); };
+    }
+    // First paint from plain HTTP, then live over the socket.
+    fetch('/world').then((r) => r.json()).then((w) => { if (!world) { world = w; render(); } }).catch(() => {});
+    connect();
+  </script>
+</body>
+</html>
