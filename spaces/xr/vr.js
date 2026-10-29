@@ -4,18 +4,18 @@
 // A view of the LAS AGENTS over your room (passthrough). Each agent is a
 // BUBBLE — a flat circle in its widget color with its name — and the
 // bubbles float in front of you in a SUNFLOWER (Vogel's spiral), drifting
-// with your gaze like a swarm. Trigger on one selects it: it takes the
-// center and its windows — the terminals of its sessions first, then the
-// other terminals and the browser windows on its Space — form a MOSAIC
-// ring (terminals live text, browsers live pixels). Trigger on a panel
-// opens a SCREEN: big, movable (grip) and resizable (grip a corner, or
-// both grips); several can be open; the bubbles move aside of open
-// screens. On a screen the trigger clicks, the thumbstick scrolls and a
-// keyboard types — the Mac is focused on that window at the first
-// interaction, never before. Trigger on nothing collapses everything back
-// to the bubbles. A talking agent comes closer, inflates and pulses with
-// its words in a speech bubble while its voice plays.
-// Outside VR the same scene renders flat with a mouse, for checks from the Mac.
+// with your gaze like a swarm of molecules that never overlap. Trigger on
+// one selects it: its windows — the terminals of its sessions first, then
+// the other terminals and the browser windows on its Space — form a
+// MASONRY of live tiles centered where you look, the agent's name above.
+// Every tile is interactive in place: the trigger clicks into it (the Mac
+// focuses that window at the first interaction, never before), the
+// thumbstick scrolls, a keyboard under the active tile types. Both grips
+// on a tile resize it and it keeps that size, the others re-flowing around
+// it; one grip drags a tile into another slot. Trigger on nothing collapses
+// back to the bubbles. A talking agent comes closer, inflates and pulses
+// with its words in a speech bubble while its voice plays. Outside VR the
+// same scene renders flat with a mouse, for checks from the Mac.
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { ARButton } from 'three/addons/webxr/ARButton.js';
@@ -155,9 +155,8 @@ function drawTerminal(wid, { rows, cols, text }) {
     if (t) t.tex.dispose();
     t = { tex, canvas, aspect: W / H }; termTex.set(wid, t);
     let relayout = false;
-    for (const p of panels) if (p.wid === wid) { applyTexture(p.mesh, tex, t.aspect, p.w); relayout = true; }
-    if (relayout) { layoutMosaic(); for (const p of panels) placePanel(p); for (const f of flowers.values()) if (f.title) f.title.position.y = mosaicExtent.top + 0.1; }
-    for (const sc of screens) if (sc.wid === wid) applyTexture(sc.mesh, tex, t.aspect, SCREEN_WIDTH_M);
+    for (const p of panels) if (p.wid === wid) { p.h = p.w / t.aspect; p.aspectSet = true; applyTexture(p.mesh, tex, t.aspect, p.w); relayout = true; }
+    if (relayout) { layoutMosaic(); placeMosaic(); }
   }
   const g = t.canvas.getContext('2d');
   g.fillStyle = '#0e0e12'; g.fillRect(0, 0, W, H);
@@ -172,24 +171,15 @@ function applyTexture(mesh, tex, aspect, width = null) {
     const h = width / aspect;
     mesh.geometry.dispose(); mesh.geometry = new THREE.PlaneGeometry(width, h);
     if (mesh.children[0]) { mesh.children[0].geometry.dispose(); mesh.children[0].geometry = new THREE.PlaneGeometry(width + 0.04, h + 0.04); }
-    if (mesh.children[1]) mesh.children[1].position.y = h / 2 + 0.05;
   }
 }
 
 // ── the bubbles (a sunflower) ──────────────────────────────────────────────
 let world = null;
 let selected = null;
-const flowers = new Map();   // name → { group, circle, label, agent, color, target, phase, speech, title, talking, talkText }
-const panels = [];           // the selected agent's mosaic
-const screens = [];          // open windows, big: { wid, mesh, handles, kind, loading, at, aspectSet, focused, agent, color }
-// Where you put a screen (position in root space, scale) is remembered per agent + window and used when it is opened again.
-const screenMemory = new Map();
-try { for (const [k, v] of Object.entries(JSON.parse(localStorage.getItem('las-spaces-screens') || '{}'))) screenMemory.set(k, v); } catch { /* fresh */ }
-function rememberScreen(sc) {
-  screenMemory.set(`${sc.agent}:${sc.wid}`, { p: sc.mesh.position.toArray(), s: sc.mesh.scale.x });
-  try { localStorage.setItem('las-spaces-screens', JSON.stringify(Object.fromEntries([...screenMemory].slice(-200)))); } catch { /* ignore */ }
-}
-let activeScreen = null;
+const flowers = new Map();   // name → { group, circle, agent, color, target, vel, r, phase, speech, title, talking }
+const panels = [];           // the selected agent's masonry: { mesh, label, wid, kind, w, h, scale, off, focused, loading, at }
+let activeTile = null;       // the tile the keyboard sits under and keys go to
 const hoverables = [];
 let hovered = null;
 
@@ -198,7 +188,7 @@ function agentWindows(agent) {
   const space = world.displays[0].spaces.find((s) => s.id === agent.space);
   if (!space) return [];
   const terms = space.windows.filter((w) => w.kind === 'terminal');
-  return [...terms.filter((w) => w.session), ...terms.filter((w) => !w.session), ...space.windows.filter((w) => w.kind === 'browser')].slice(0, 10);
+  return [...terms.filter((w) => w.session), ...terms.filter((w) => !w.session), ...space.windows.filter((w) => w.kind === 'browser')].slice(0, 12);
 }
 
 function makeFlower(agent) {
@@ -207,33 +197,25 @@ function makeFlower(agent) {
   const circle = new THREE.Mesh(new THREE.PlaneGeometry(CLOUD.bubbleR * 2, CLOUD.bubbleR * 2), new THREE.MeshBasicMaterial({ map: bubbleFaceTexture(agent.name, color), transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }));
   circle.userData = { action: 'agent', name: agent.name, label: agent.name };
   group.add(circle); hoverables.push(circle);
-  const label = { visible: true };   // the name lives inside the circle now
-  const f = { group, circle, label, agent, color, target: new THREE.Vector3(), vel: new THREE.Vector3(), r: CLOUD.r, phase: Math.random() * Math.PI * 2, speech: null, title: null, talking: false, fresh: true };
+  const f = { group, circle, label: { visible: true }, agent, color, target: new THREE.Vector3(), vel: new THREE.Vector3(), r: CLOUD.r, phase: Math.random() * Math.PI * 2, speech: null, title: null, talking: false, fresh: true };
   flowers.set(agent.name, f);
   root.add(group);
   return f;
 }
 
-/** The sunflower's center is your gaze (smoothed, both axes). */
 function cloudCenter() { return { az: gazeAz, el: gazeEl }; }
 function mosaicCenter() { return { az: mosaicAz, el: mosaicEl }; }
-let mosaicAz = 0, mosaicEl = 0;   // the mosaic opens centered where you look and stays there (it does not follow the gaze)
+let mosaicAz = 0, mosaicEl = 0;   // the masonry opens centered where you look and stays there
 
-/** What occupies the middle of the view, as angular boxes around the viewer: open screens, the keyboard, the mosaic. */
+/** What occupies the middle of the view, as angular boxes around the viewer: the masonry (title included) and the keyboard. */
 function obstacles() {
   const list = [];
   const tmp = new THREE.Vector3();
   const angOf = (obj) => { obj.getWorldPosition(tmp); tmp.sub(viewerWorld); const d = tmp.length() || 1; return { az: Math.atan2(tmp.x, -tmp.z), el: Math.asin(THREE.MathUtils.clamp(tmp.y / d, -1, 1)), d }; };
-  for (const sc of screens) {
-    const g = sc.mesh.geometry.parameters, a = angOf(sc.mesh), k = root.scale.x;
-    list.push({ az: a.az, el: a.el, hAz: Math.atan((g.width * sc.mesh.scale.x * k / 2) / a.d) + CLOUD.margin, hEl: Math.atan((g.height * sc.mesh.scale.y * k / 2) / a.d) + CLOUD.margin });
-  }
-  if (keyboard && activeScreen) { const a = angOf(keyboard.group); list.push({ az: a.az, el: a.el - 0.08, hAz: Math.atan(0.6 * root.scale.x / a.d) + CLOUD.margin, hEl: Math.atan(0.22 * root.scale.x / a.d) + CLOUD.margin }); }
-  if (panels.length) { const c = mosaicCenter(); list.push({ az: c.az, el: c.el + 0.06, hAz: mosaicExtent.hAz, hEl: mosaicExtent.hEl + 0.12 }); }   // includes the title above
-  if (stageTitle && screens.length) { const b = screenBox({ mesh: stageTitle }); list.push({ az: b.az, el: b.el, hAz: b.hAz + CLOUD.margin, hEl: b.hEl + CLOUD.margin }); }
+  if (panels.length) { const c = mosaicCenter(); list.push({ az: c.az, el: c.el + 0.06, hAz: mosaicExtent.hAz, hEl: mosaicExtent.hEl + 0.12 }); }
+  if (keyboard) { const a = angOf(keyboard.group); list.push({ az: a.az, el: a.el - 0.08, hAz: Math.atan(0.6 * keyboard.group.scale.x * root.scale.x / a.d) + CLOUD.margin, hEl: Math.atan(0.22 * keyboard.group.scale.x * root.scale.x / a.d) + CLOUD.margin }); }
   return list;
 }
-/** Push a direction out of every obstacle box it falls in, to the box's rim along the line from the box center. */
 function avoid(az, el, obs) {
   for (let pass = 0; pass < 3; pass++) {
     for (const o of obs) {
@@ -242,15 +224,13 @@ function avoid(az, el, obs) {
       if (Math.abs(dAz) >= o.hAz || Math.abs(dEl) >= o.hEl) continue;
       const nx = dAz / o.hAz, ny = dEl / o.hEl, len = Math.hypot(nx, ny) || 1e-3;
       const ux = nx / len, uy = ny / len;
-      const t = 1 / Math.max(Math.abs(ux), Math.abs(uy));   // to the rim of the unit box along (ux, uy)
+      const t = 1 / Math.max(Math.abs(ux), Math.abs(uy));
       az = o.az + ux * t * o.hAz + ux * 0.03;
       el = o.el + uy * t * o.hEl + uy * 0.03;
     }
   }
   return { az, el };
 }
-
-/** Sunflower targets, every frame (cheap): seed i at r = step·√i, angle i·golden, around the gaze, flowing around obstacles. */
 function layoutCloud() {
   const names = [...flowers.keys()].sort();
   const order = selected ? [selected, ...names.filter((n) => n !== selected)] : names;
@@ -258,10 +238,10 @@ function layoutCloud() {
   order.forEach((n, i) => {
     const f = flowers.get(n);
     if (n === selected) { f.r = MOSAIC.r - 0.05; f.target.copy(onSphere(mosaicCenter().az, mosaicCenter().el, f.r)); return; }
-    const k = selected ? i : i + 1;                   // with nothing selected, no seed sits dead center
-    const rr = CLOUD.step * root.scale.x * Math.sqrt(k), th = k * GOLDEN;   // spacing follows the display's scale: smaller bubbles, closer together
+    const k = selected ? i : i + 1;
+    const rr = CLOUD.step * root.scale.x * Math.sqrt(k), th = k * GOLDEN;
     const a = avoid(c.az + rr * Math.cos(th), c.el + rr * Math.sin(th), obs);
-    f.r = f.talking ? CLOUD.r - 0.5 : CLOUD.r;         // a talking agent comes closer
+    f.r = f.talking ? CLOUD.r - 0.5 : CLOUD.r;
     f.target.copy(onSphere(a.az, a.el, f.r));
   });
 }
@@ -270,10 +250,10 @@ function setSelected(name) {
   selected = name;
   for (const [n, f] of flowers) {
     const isSel = n === name;
-    f.circle.visible = !isSel; f.label.visible = !isSel;
+    f.circle.visible = !isSel;
     if (f.title) { f.group.remove(f.title); disposeObject(f.title); unhover(f.title); f.title = null; }
     if (isSel) {
-      const title = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.11), new THREE.MeshBasicMaterial({ map: textTexture(n, { width: 1024, height: 128, bg: f.color, fg: ink(f.color), font: 'bold 64px -apple-system, system-ui, sans-serif', align: 'center' }) }));
+      const title = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.13), new THREE.MeshBasicMaterial({ map: textTexture(n, { width: 1024, height: 134, bg: f.color, fg: ink(f.color), font: 'bold 72px -apple-system, system-ui, sans-serif', align: 'center' }) }));
       title.position.set(0, mosaicExtent.top + 0.1, 0);
       title.userData = { action: 'agent', name: n, label: n };
       f.group.add(title); hoverables.push(title); f.title = title;
@@ -281,38 +261,56 @@ function setSelected(name) {
   }
 }
 
+// ── the masonry: the selected agent's windows, each a live, interactive tile ──
+// Order and per-tile scale are remembered per agent (localStorage). A tile
+// made big (both grips) keeps its size and the others re-flow around it;
+// a tile dragged (one grip) drops into the slot nearest where it is let go.
+const mosaicMemory = new Map();   // agent → { order: [wid], scales: { wid: s } }
+try { for (const [k, v] of Object.entries(JSON.parse(localStorage.getItem('las-spaces-mosaic') || '{}'))) mosaicMemory.set(k, v); } catch { /* fresh */ }
+function rememberMosaic() {
+  if (!selected) return;
+  mosaicMemory.set(selected, { order: panels.map((p) => p.wid), scales: Object.fromEntries(panels.map((p) => [p.wid, p.scale])) });
+  try { localStorage.setItem('las-spaces-mosaic', JSON.stringify(Object.fromEntries(mosaicMemory))); } catch { /* ignore */ }
+}
 function clearPanels() {
   for (const p of panels) { root.remove(p.mesh); root.remove(p.label); disposeObject(p.mesh); disposeObject(p.label); unhover(p.mesh); }
   panels.length = 0;
+  activeTile = null;
+  destroyKeyboard();
 }
-/** Masonry offsets (meters, around the mosaic center): columns of equal width, each tile dropped into the shortest column. */
+/** Skyline masonry: equal columns; a tile spans as many columns as its (scaled) width needs and lands where it fits lowest. */
 function layoutMosaic() {
-  const cols = Math.min(MOSAIC.cols, Math.max(1, panels.length));
+  const cols = MOSAIC.cols, unit = MOSAIC.colW + MOSAIC.gap;
   const heights = new Array(cols).fill(0);
-  const order = [...panels.filter((p) => p.kind === 'browser'), ...panels.filter((p) => p.kind !== 'browser')];
-  for (const p of order) {
-    const g = p.mesh.geometry.parameters, h = g.height + LABEL_H + 0.01;
-    let c = 0; for (let i = 1; i < cols; i++) if (heights[i] < heights[c] - 1e-6) c = i;
-    p.off = { x: (c - (cols - 1) / 2) * (MOSAIC.colW + MOSAIC.gap), y: -(heights[c] + g.height / 2), h: g.height };
-    heights[c] += h + MOSAIC.gap;
+  for (const p of panels) {
+    const w = p.w * p.scale, h = p.h * p.scale + LABEL_H + 0.01;
+    const span = Math.min(cols, Math.max(1, Math.round(w / MOSAIC.colW)));
+    let best = 0, bestH = Infinity;
+    for (let c = 0; c + span <= cols; c++) { const hh = Math.max(...heights.slice(c, c + span)); if (hh < bestH - 1e-6) { bestH = hh; best = c; } }
+    const x = (best + (span - 1) / 2 - (cols - 1) / 2) * unit;
+    p.off = { x, y: -(bestH + p.h * p.scale / 2), h: p.h * p.scale };
+    for (let c = best; c < best + span; c++) heights[c] = bestH + h + MOSAIC.gap;
   }
-  const total = Math.max(...heights) - MOSAIC.gap;
-  for (const p of panels) p.off.y += total / 2;   // center the whole wall vertically
+  const total = Math.max(0, Math.max(...heights, 0) - MOSAIC.gap);
+  for (const p of panels) p.off.y += total / 2;
   mosaicExtent = { hAz: (cols * MOSAIC.colW + (cols - 1) * MOSAIC.gap) / 2 / MOSAIC.r + 0.06, hEl: total / 2 / MOSAIC.r + 0.06, top: total / 2 };
+  for (const f of flowers.values()) if (f.title) f.title.position.y = mosaicExtent.top + 0.1;
 }
 function placePanel(p) {
-  if (!p.off) return;
+  if (!p.off || p.dragging) return;
   const c = mosaicCenter(), r = MOSAIC.r;
   const az = c.az + p.off.x / r, el = c.el + p.off.y / r;
   place(p.mesh, az, el, r);
   place(p.label, az, el - (p.off.h / 2 + LABEL_H / 2 + 0.005) / r, r);
 }
+function placeMosaic() { for (const p of panels) placePanel(p); }
 function buildMosaic() {
   clearPanels();
   const f = selected && flowers.get(selected);
   if (!f) return;
-  const wins = agentWindows(f.agent);
-  wins.forEach((win, i) => {
+  const mem = mosaicMemory.get(selected) || { order: [], scales: {} };
+  const wins = agentWindows(f.agent).sort((a, b) => { const ia = mem.order.indexOf(a.wid), ib = mem.order.indexOf(b.wid); return (ia === -1 ? 1e9 : ia) - (ib === -1 ? 1e9 : ib); });
+  wins.forEach((win) => {
     const w = MOSAIC.colW;
     const tt = win.kind === 'terminal' ? termTex.get(win.wid) : null;
     const h = tt ? w / tt.aspect : win.kind === 'browser' ? w * 9 / 16 * MOSAIC.browserScale : w * 9 / 16;
@@ -321,44 +319,67 @@ function buildMosaic() {
     const labelText = win.session ? `${win.session.runtime} — ${win.title}` : (win.title || win.app);
     const label = new THREE.Mesh(new THREE.PlaneGeometry(w, LABEL_H), new THREE.MeshBasicMaterial({ map: textTexture(labelText, { width: 1024, height: 92, fg: win.kind === 'terminal' ? '#cfe8ff' : '#e8e8e8', font: '30px -apple-system, system-ui, sans-serif' }), transparent: true }));
     root.add(mesh); root.add(label); hoverables.push(mesh);
-    const p = { mesh, label, wid: win.wid, kind: win.kind, w, loading: false, at: 0, index: i, count: wins.length };
+    const p = { mesh, label, wid: win.wid, kind: win.kind, w, h, scale: mem.scales[win.wid] || 1, focused: false, loading: false, at: 0, aspectSet: Boolean(tt) };
+    mesh.scale.setScalar(p.scale); label.scale.setScalar(p.scale);
     if (tt) applyTexture(mesh, tt.tex, tt.aspect);
-    if (screens.some((sc) => sc.wid === win.wid)) { mesh.visible = false; label.visible = false; }
     panels.push(p);
   });
   layoutMosaic();
-  for (const p of panels) placePanel(p);
-  for (const f of flowers.values()) if (f.title) f.title.position.y = mosaicExtent.top + 0.1;
+  placeMosaic();
 }
-function placeMosaic() { for (const p of panels) placePanel(p); }
+const tileOf = (obj) => panels.find((p) => p.mesh === obj);
+function setTileScale(p, sc) {
+  p.scale = THREE.MathUtils.clamp(sc, 0.6, 3.5);
+  p.mesh.scale.setScalar(p.scale); p.label.scale.setScalar(p.scale);
+  layoutMosaic(); placeMosaic();
+}
+/** Drop a dragged tile into the slot nearest where it was let go, and re-flow. */
+function dropTile(p) {
+  p.dragging = false;
+  const tmp = new THREE.Vector3(); p.mesh.getWorldPosition(tmp); tmp.sub(viewerWorld);
+  const d = tmp.length() || 1, az = Math.atan2(tmp.x, -tmp.z), el = Math.asin(THREE.MathUtils.clamp(tmp.y / d, -1, 1));
+  const c = mosaicCenter(), x = (az - c.az) * MOSAIC.r, y = (el - c.el) * MOSAIC.r;
+  let best = null, bestD = Infinity;
+  for (const q of panels) { if (q === p) continue; const dd = Math.hypot(q.off.x - x, q.off.y - y); if (dd < bestD) { bestD = dd; best = q; } }
+  const from = panels.indexOf(p); panels.splice(from, 1);
+  let to = best ? panels.indexOf(best) : panels.length;
+  if (best && (y < best.off.y - best.off.h / 4 || (Math.abs(y - best.off.y) <= best.off.h / 4 && x > best.off.x))) to += 1;   // below or right of the nearest: after it
+  panels.splice(to, 0, p);
+  layoutMosaic(); placeMosaic(); rememberMosaic();
+}
+async function ensureFocused(p) {
+  if (!p || p.focused) return Boolean(p);
+  const r = await post(`/window/${p.wid}/focus`);
+  p.focused = Boolean(r && r.ok);
+  report({ act: 'focus-for-input', wid: p.wid, result: r });
+  return p.focused;
+}
+function setActiveTile(p) {
+  activeTile = p;
+  if (p && !keyboard) buildKeyboard();
+  if (!p) destroyKeyboard();
+}
 
 function buildWorld() {
   if (!world || !world.displays[0]) return;
-  if (!world.agents.length && flowers.size) return;   // a hiccup, never a reason to drop every bubble
+  if (!world.agents.length && flowers.size) return;
   const seen = new Set();
   for (const a of world.agents) { seen.add(a.name); const f = flowers.get(a.name); if (f) f.agent = a; else makeFlower(a); }
   for (const [name, f] of flowers) if (!seen.has(name)) { root.remove(f.group); disposeObject(f.group); unhover(f.circle); if (f.title) unhover(f.title); flowers.delete(name); }
   if (selected && !flowers.has(selected)) selected = null;
+  const f = selected && flowers.get(selected);
+  const wids = f ? agentWindows(f.agent).map((w) => w.wid) : [];
+  const same = f && panels.length === wids.length && panels.every((p) => wids.includes(p.wid));
   setSelected(selected);
-  buildMosaic();
-  for (const sc of [...screens]) if (!agentWindowsAll().has(sc.wid)) closeScreen(sc);
-  updateStageTitle();
-  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · bubble: select · tile: open a screen · grip moves a screen / the keyboard / everything, both grips resize it · trigger clicks, stick scrolls · nothing: collapse · A/B: close screen`;
+  if (!same) buildMosaic();   // only re-flow when the set of windows changed: a refresh must not undo your sizes and order
+  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · bubble: select · tile: trigger clicks (and focuses it on the Mac), stick scrolls, grip drags it into another slot, both grips resize it · grip on nothing moves everything · nothing: collapse`;
 }
-function agentWindowsAll() { const s = new Set(); if (world) for (const d of world.displays) for (const sp of d.spaces) for (const w of sp.windows) s.add(w.wid); return s; }
-
 function select(name) {
-  // Another agent takes the stage: the previous one's screens and mosaic go, the new mosaic opens where you look.
-  if (name !== selected) for (const sc of [...screens]) closeScreen(sc);
   mosaicAz = headYaw; mosaicEl = THREE.MathUtils.clamp(headPitch, -0.4, 0.4);
   setSelected(selected === name ? null : name);
   buildMosaic();
 }
-function collapse() {
-  for (const sc of [...screens]) closeScreen(sc);
-  setSelected(null);
-  buildMosaic();
-}
+function collapse() { setSelected(null); buildMosaic(); }
 
 // ── speech: the talking agent comes closer, inflates, pulses, with its words ──
 function speech(agentName, text, phase) {
@@ -370,143 +391,40 @@ function speech(agentName, text, phase) {
   const { tex, aspect } = bubbleTexture(text, f.color);
   const w = 0.6, h = w / aspect;
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
-  const base = f.title ? f.title.position.y + 0.06 : CLOUD.bubbleR * 1.6;
+  const base = f.title ? f.title.position.y + 0.07 : CLOUD.bubbleR * 1.6;
   mesh.position.set(0, base + h / 2 + 0.04, 0.02);
   f.group.add(mesh); f.speech = mesh;
 }
 
-// ── screens: open windows, big, movable, resizable, several at once ────────
-function openScreen(panel, label) {
-  const existing = screens.find((s) => s.wid === panel.wid);
-  if (existing) { activeScreen = existing; return; }
-  while (screens.length >= MAX_SCREENS) closeScreen(screens[0]);
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH_M, SCREEN_WIDTH_M * 9 / 16), new THREE.MeshBasicMaterial({ color: 0x000000 }));
-  mesh.userData = { action: 'screen', wid: panel.wid, label, kind: panel.kind };
-  const frame = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH_M + 0.04, SCREEN_WIDTH_M * 9 / 16 + 0.04), new THREE.MeshBasicMaterial({ color: 0x8ab4ff }));
-  frame.position.z = -0.003; mesh.add(frame);
-  const title = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH_M, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(label, { width: 1536, height: 64, font: '34px -apple-system, system-ui, sans-serif', fg: '#fff' }), transparent: true }));
-  title.position.y = SCREEN_WIDTH_M * 9 / 32 + 0.05; mesh.add(title);
-  const agentName = selected || '', color = (selected && flowers.get(selected) && flowers.get(selected).color) || '#3a3a44';
-  const handles = [];
-  root.add(mesh); hoverables.push(mesh);
-  const sc = { wid: panel.wid, mesh, handles, kind: panel.kind, loading: false, at: 0, aspectSet: false, focused: false, agent: agentName, color };
-  screens.push(sc); activeScreen = sc;
-  const mem = screenMemory.get(`${agentName}:${panel.wid}`);
-  if (mem) { mesh.position.fromArray(mem.p); mesh.scale.setScalar(mem.s || 1); mesh.lookAt(viewerWorld); }
-  else placeScreenFree(sc);   // where you look, in the first spot that does not overlap another screen
-  panel.mesh.visible = false; panel.label.visible = false;   // the tile is on the stage now
-  updateStageTitle();
-  const tt = panel.kind === 'terminal' ? termTex.get(panel.wid) : null;
-  if (tt) { applyTexture(mesh, tt.tex, tt.aspect, SCREEN_WIDTH_M); sc.aspectSet = true; }
-  if (!keyboard) buildKeyboard();
-}
-function closeScreen(sc) {
-  const i = screens.indexOf(sc); if (i !== -1) screens.splice(i, 1);
-  for (const p of panels) if (p.wid === sc.wid) { p.mesh.visible = true; p.label.visible = true; }
-  updateStageTitle();
-  root.remove(sc.mesh);
-  for (const o of [sc.mesh, ...sc.handles]) unhover(o);
-  disposeObject(sc.mesh);
-  if (hovered === sc.mesh) setHovered(null);
-  if (activeScreen === sc) activeScreen = screens[screens.length - 1] || null;
-  if (!screens.length) destroyKeyboard();
-}
-/** A screen's angular box around the viewer (center and half extents, radians) and its distance. */
-function screenBox(sc) {
-  const g = sc.mesh.geometry.parameters, tmp = new THREE.Vector3();
-  sc.mesh.getWorldPosition(tmp); tmp.sub(viewerWorld);
-  const d = tmp.length() || 1, k = root.scale.x;
-  return { az: Math.atan2(tmp.x, -tmp.z), el: Math.asin(THREE.MathUtils.clamp(tmp.y / d, -1, 1)), d, hAz: Math.atan((g.width * sc.mesh.scale.x * k / 2) / d), hEl: Math.atan((g.height * sc.mesh.scale.y * k / 2) / d) };
-}
-const overlaps = (a, b, m = 0.03) => { let dAz = a.az - b.az; dAz = Math.atan2(Math.sin(dAz), Math.cos(dAz)); return Math.abs(dAz) < a.hAz + b.hAz + m && Math.abs(a.el - b.el) < a.hEl + b.hEl + m; };
-/** First free spot for a new screen: where you look, then stepping right/left/down. */
-function placeScreenFree(sc) {
-  const others = screens.filter((o) => o !== sc).map(screenBox);
-  const g = sc.mesh.geometry.parameters, hAz = Math.atan((g.width / 2) / SCREEN_DIST), hEl = Math.atan((g.height / 2) / SCREEN_DIST);
-  const steps = [[0, 0], [1, 0], [-1, 0], [2, 0], [-2, 0], [0, -1], [1, -1], [-1, -1], [0, 1], [1, 1], [-1, 1]];
-  for (const [i, j] of steps) {
-    const az = headYaw + i * (2 * hAz + 0.08), el = headPitch * 0.5 + j * (2 * hEl + 0.1);
-    const box = { az, el, hAz, hEl };
-    if (!others.some((o) => overlaps(box, o))) { place(sc.mesh, az, el, SCREEN_DIST); return; }
-  }
-  place(sc.mesh, headYaw, headPitch * 0.5, SCREEN_DIST);
-}
-/** Screens never overlap: while one is moved or scaled, the others are nudged out of its way (and remembered there). */
-function separateScreens() {
-  const held = new Set([...grabs.values()].filter((g) => g.kind === 'screen').map((g) => g.screen));
-  for (let pass = 0; pass < 2; pass++) for (const a of screens) for (const b of screens) {
-    if (a === b || held.has(b) || !held.has(a) && !held.has(b) && pass === 0) continue;
-    const A = screenBox(a), B = screenBox(b);
-    if (!overlaps(A, B)) continue;
-    let dAz = B.az - A.az; dAz = Math.atan2(Math.sin(dAz), Math.cos(dAz));
-    const dEl = B.el - A.el;
-    const ovAz = A.hAz + B.hAz + 0.03 - Math.abs(dAz), ovEl = A.hEl + B.hEl + 0.03 - Math.abs(dEl);
-    const az = ovAz < ovEl ? B.az + Math.sign(dAz || 1) * ovAz : B.az, el = ovAz < ovEl ? B.el : B.el + Math.sign(dEl || 1) * ovEl;
-    place(b.mesh, az, el, B.d * root.scale.x);
-    rememberScreen(b);
-  }
-}
-// One title for the stage: the agent's name, above whatever screens are open.
-let stageTitle = null;
-function updateStageTitle() {
-  if (stageTitle) { root.remove(stageTitle); disposeObject(stageTitle); stageTitle = null; }
-  if (!screens.length) return;
-  const f = flowers.get(screens[0].agent) || (selected && flowers.get(selected));
-  const name = screens[0].agent || selected || '', color = (f && f.color) || '#3a3a44';
-  stageTitle = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.13), new THREE.MeshBasicMaterial({ map: textTexture(name, { width: 1024, height: 134, bg: color, fg: ink(color), font: 'bold 72px -apple-system, system-ui, sans-serif', align: 'center' }) }));
-  root.add(stageTitle);
-}
-function placeStageTitle() {
-  if (!stageTitle || !screens.length) return;
-  const boxes = screens.map(screenBox);
-  const top = Math.max(...boxes.map((b) => b.el + b.hEl)), az = boxes.reduce((a, b) => a + b.az, 0) / boxes.length;
-  place(stageTitle, az, top + 0.09, Math.min(...boxes.map((b) => b.d)) * root.scale.x);
-}
-async function ensureFocused(sc) {
-  if (!sc || sc.focused) return Boolean(sc);
-  const r = await post(`/window/${sc.wid}/focus`);
-  sc.focused = Boolean(r && r.ok);
-  report({ act: 'focus-for-input', wid: sc.wid, result: r });
-  return sc.focused;
-}
+// ── live pixels for browser tiles: the hovered/active one live, the rest every 3 s ──
 const loader = new THREE.TextureLoader();
-function refreshScreen(sc) {
-  if (sc.loading || performance.now() - sc.at < 200) return;
-  if (sc.kind === 'terminal' && termTex.has(sc.wid)) return;
-  sc.loading = true;
-  const hi = sc.mesh.scale.x >= 1.15;
-  loader.load(`/thumb/${sc.wid}?w=${hi ? SCREEN_W_HI : SCREEN_W}&live=1${hi ? '&hi=1' : ''}&t=${Date.now()}`, (tex) => {
-    if (!screens.includes(sc)) { tex.dispose(); return; }
+function refresh(p, live) {
+  if (p.loading) return;
+  p.loading = true;
+  const hi = live && p.scale >= 1.5;
+  loader.load(`/thumb/${p.wid}?w=${live ? (hi ? SCREEN_W_HI : SCREEN_W) : THUMB_W}${live ? '&live=1' : ''}${hi ? '&hi=1' : ''}&t=${Date.now()}`, (tex) => {
     tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
-    const old = sc.mesh.material.map;
-    if (!sc.aspectSet && tex.image && tex.image.width) { sc.aspectSet = true; applyTexture(sc.mesh, tex, tex.image.width / tex.image.height, SCREEN_WIDTH_M); }
-    else { sc.mesh.material.map = tex; sc.mesh.material.color.set(0xffffff); sc.mesh.material.needsUpdate = true; }
+    const old = p.mesh.material.map;
+    if (!p.aspectSet && tex.image && tex.image.width) {   // the real window's aspect, once; the masonry re-flows for it
+      p.aspectSet = true; p.h = p.w * tex.image.height / tex.image.width;
+      p.mesh.material.map = tex; p.mesh.material.color.set(0xffffff); p.mesh.material.needsUpdate = true;
+      p.mesh.geometry.dispose(); p.mesh.geometry = new THREE.PlaneGeometry(p.w, p.h);
+      layoutMosaic(); placeMosaic();
+    } else { p.mesh.material.map = tex; p.mesh.material.color.set(0xffffff); p.mesh.material.needsUpdate = true; }
     if (old && old !== tex) old.dispose();
-    sc.loading = false; sc.at = performance.now();
-  }, undefined, () => { sc.loading = false; sc.at = performance.now(); });
-}
-function refresh(panel, live) {
-  if (panel.loading) return;
-  panel.loading = true;
-  loader.load(`/thumb/${panel.wid}?w=${live ? LIVE_W : THUMB_W}${live ? '&live=1' : ''}&t=${Date.now()}`, (tex) => {
-    tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
-    const old = panel.mesh.material.map;
-    panel.mesh.material.map = tex; panel.mesh.material.color.set(0xffffff); panel.mesh.material.needsUpdate = true;
-    if (old) old.dispose();
-    panel.loading = false; panel.at = performance.now();
-  }, undefined, () => { panel.loading = false; panel.at = performance.now(); });
+    p.loading = false; p.at = performance.now();
+  }, undefined, () => { p.loading = false; p.at = performance.now(); });
 }
 setInterval(() => {
-  for (const sc of screens) refreshScreen(sc);
   const now = performance.now();
   for (const p of panels) {
     if (p.kind === 'terminal' && termTex.has(p.wid)) continue;
-    const live = hovered && hovered.userData.wid === p.wid;
-    if (now - p.at > (live ? 350 : 3000)) refresh(p, live);
+    const live = (hovered && hovered === p.mesh) || p === activeTile;
+    if (now - p.at > (live ? 300 : 3000)) refresh(p, live);
   }
-}, 200);
+}, 150);
 
-// ── the keyboard: under the active screen ──────────────────────────────────
+// ── the keyboard: under the active tile ──────────────────────────────────
 const KEY_ROWS = [
   [['`', '~'], ['1', '!'], ['2', '@'], ['3', '#'], ['4', '$'], ['5', '%'], ['6', '^'], ['7', '&'], ['8', '*'], ['9', '('], ['0', ')'], ['-', '_'], ['=', '+'], { key: 'backspace', label: '⌫', w: 1.6 }],
   [{ key: 'tab', label: 'Tab', w: 1.4 }, 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', ['[', '{'], [']', '}'], ['\\', '|']],
@@ -556,16 +474,16 @@ function destroyKeyboard() {
   keyboard = null;
 }
 function placeKeyboard() {
-  if (!keyboard || !activeScreen || keyboard.detached) return;   // once grabbed, the keyboard stays where you left it
-  const sc = activeScreen, g = sc.mesh.geometry.parameters;
-  keyboard.group.position.copy(sc.mesh.position);
-  keyboard.group.quaternion.copy(sc.mesh.quaternion);
-  keyboard.group.translateY(-(g.height / 2) * sc.mesh.scale.x - 0.12);
-  keyboard.group.translateZ(0.05);
+  if (!keyboard || !activeTile || keyboard.detached) return;   // once grabbed, the keyboard stays where you left it
+  const p = activeTile, g = p.mesh.geometry.parameters;
+  keyboard.group.position.copy(p.mesh.position);
+  keyboard.group.quaternion.copy(p.mesh.quaternion);
+  keyboard.group.translateY(-(g.height / 2) * p.scale - LABEL_H * p.scale - 0.12);
+  keyboard.group.translateZ(0.08);
   keyboard.group.rotateX(-0.35);
 }
 async function pressKey(u) {
-  const sc = activeScreen; if (!sc) return;
+  const sc = activeTile; if (!sc) return;
   const def = u.def;
   if (def && def.mod) { mods[def.mod] = !mods[def.mod]; paintKeys(); return; }
   if (!(await ensureFocused(sc))) return;
@@ -588,7 +506,6 @@ function pickHit(controller) {
   return raycaster.intersectObjects(hoverables, false)[0] || null;
 }
 const uvOf = (hit) => (hit && hit.uv ? { u: hit.uv.x, v: 1 - hit.uv.y } : null);
-const screenOf = (obj) => screens.find((s) => s.mesh === obj || s.handles.includes(obj));
 const controllers = [0, 1].map((i) => {
   const c = renderer.xr.getController(i);
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0x8ab4ff }));
@@ -602,16 +519,21 @@ const controllers = [0, 1].map((i) => {
 const mouse = new THREE.Vector2(-2, -2);
 window.addEventListener('pointermove', (e) => { mouse.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1); });
 window.addEventListener('click', () => { if (renderer.xr.isPresenting) return; raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; act(hit ? hit.object : null, uvOf(hit), null); });
-window.addEventListener('wheel', (e) => { if (renderer.xr.isPresenting) return; const sc = hovered && screenOf(hovered); if (!sc || !sc.focused) return; raycaster.setFromCamera(mouse, camera); const uv = uvOf(raycaster.intersectObject(sc.mesh, false)[0]); if (uv) post('/input', { wid: sc.wid, type: 'scroll', ...uv, dx: e.deltaX, dy: e.deltaY }); });
-window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (activeScreen) closeScreen(activeScreen); else collapse(); } });
+window.addEventListener('wheel', (e) => { if (renderer.xr.isPresenting) return; const p = hovered && tileOf(hovered); if (!p || !p.focused) return; raycaster.setFromCamera(mouse, camera); const uv = uvOf(raycaster.intersectObject(p.mesh, false)[0]); if (uv) post('/input', { wid: p.wid, type: 'scroll', ...uv, dx: e.deltaX, dy: e.deltaY }); });
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (activeTile) setActiveTile(null); else collapse(); } });
 
 async function act(obj, uv, controller) {
   if (!obj) { collapse(); report({ act: 'collapse' }); return; }
   const u = obj.userData;
-  if (u.action === 'screen') { const sc = screenOf(obj); activeScreen = sc; if (uv && await ensureFocused(sc)) post('/input', { wid: sc.wid, type: 'click', ...uv }); return; }
   if (u.action === 'key') { pressKey(u); return; }
   if (u.action === 'agent') { select(u.name); report({ act: 'select', label: u.name }); return; }
-  if (u.action === 'window') { const panel = panels.find((p) => p.wid === u.wid); if (panel) openScreen(panel, u.label); report({ act: 'open', label: u.label }); }
+  if (u.action === 'window') {
+    // a tile is live and interactive in place: the first trigger makes it the active one (keyboard under it) and focuses it on the Mac; the click lands in the window
+    const p = tileOf(obj); if (!p) return;
+    setActiveTile(p);
+    if (uv && await ensureFocused(p)) post('/input', { wid: p.wid, type: 'click', ...uv });
+    report({ act: 'tile', label: u.label });
+  }
 }
 
 // grips: on a screen → move it (two grips → scale it); on a corner → resize; on nothing → move the display (two → scale it)
@@ -620,15 +542,15 @@ let twoHand = null;
 function ctrlPos(c) { return new THREE.Vector3().setFromMatrixPosition(c.matrixWorld); }
 function grabTargetOf(hit) {
   if (!hit) return { kind: 'root', obj: root };
-  const sc = screenOf(hit.object);
-  if (sc) { activeScreen = sc; return { kind: 'screen', obj: sc.mesh, screen: sc }; }
+  const p = tileOf(hit.object);
+  if (p) { setActiveTile(p); p.dragging = true; return { kind: 'tile', obj: p.mesh, tile: p }; }
   if (keyboard && hit.object.userData.action === 'key') { keyboard.detached = true; return { kind: 'keyboard', obj: keyboard.group }; }
   return { kind: 'root', obj: root };
 }
 function startGrab(controller) {
   const t = grabTargetOf(pickHit(controller));
-  const { kind, obj: target, screen: sc = null } = t;
-  grabs.set(controller, { kind, screen: sc, obj: target, start: ctrlPos(controller), objStart: target.position.clone() });
+  const { kind, obj: target, tile = null } = t;
+  grabs.set(controller, { kind, tile, obj: target, start: ctrlPos(controller), objStart: target.position.clone() });
   const both = [...grabs.values()];
   if (both.length === 2) {
     const same = both[0].obj === both[1].obj;
@@ -639,16 +561,21 @@ function startGrab(controller) {
 }
 function endGrab(controller) {
   const g = grabs.get(controller);
-  if (g && g.kind === 'screen') rememberScreen(g.screen);
+  const wasTwo = twoHand;
   grabs.delete(controller); twoHand = null;
+  if (g && g.kind === 'tile') {
+    if (wasTwo && wasTwo.obj === g.tile.mesh) { setTileScale(g.tile, g.tile.mesh.scale.x); g.tile.dragging = false; rememberMosaic(); }
+    else if (![...grabs.values()].some((o) => o.tile === g.tile)) dropTile(g.tile);
+  }
   for (const [c, g] of grabs) { g.start = ctrlPos(c); g.objStart = g.obj.position.clone(); }
   saveRoot();
 }
 function updateGrabs() {
   if (twoHand && grabs.size === 2) {
     const [a, b] = [...grabs.keys()].map(ctrlPos);
-    const sc = THREE.MathUtils.clamp(twoHand.startScale * a.distanceTo(b) / twoHand.startDist, twoHand.obj === root ? 0.3 : 0.4, twoHand.obj === root ? 3 : 3.5);
+    const sc = THREE.MathUtils.clamp(twoHand.startScale * a.distanceTo(b) / twoHand.startDist, twoHand.obj === root ? 0.3 : 0.6, twoHand.obj === root ? 3 : 3.5);
     twoHand.obj.scale.setScalar(sc);
+    const tp = panels.find((p) => p.mesh === twoHand.obj); if (tp) tp.label.scale.setScalar(sc);
     if (twoHand.obj !== root) return;
     const mid = a.add(b).multiplyScalar(0.5);
     root.position.copy(twoHand.startPos).sub(twoHand.startMid).multiplyScalar(sc / twoHand.startScale).add(twoHand.startMid).add(mid.sub(twoHand.startMid));
@@ -657,7 +584,7 @@ function updateGrabs() {
   for (const [c, g] of grabs) {
     const delta = ctrlPos(c).sub(g.start);
     if (g.kind === 'root') root.position.copy(g.objStart).add(delta);
-    else { g.obj.position.copy(g.objStart).add(delta.divideScalar(root.scale.x)); g.obj.lookAt(viewerWorld); if (g.kind === 'keyboard') g.obj.rotateX(-0.35); }
+    else { g.obj.position.copy(g.objStart).add(delta.divideScalar(root.scale.x)); g.obj.lookAt(viewerWorld); if (g.kind === 'keyboard') g.obj.rotateX(-0.35); if (g.kind === 'tile') { g.tile.label.position.copy(g.obj.position); g.tile.label.quaternion.copy(g.obj.quaternion); g.tile.label.translateY(-(g.tile.h / 2 + LABEL_H / 2 + 0.005) * g.tile.scale); } }
   }
 }
 
@@ -671,16 +598,16 @@ function pollGamepads() {
     const gp = src.gamepad; if (!gp) continue;
     const prev = padState.get(src) || {};
     const b4 = gp.buttons[4] && gp.buttons[4].pressed, b5 = gp.buttons[5] && gp.buttons[5].pressed;
-    if ((b4 && !prev.b4) || (b5 && !prev.b5)) { if (activeScreen) closeScreen(activeScreen); }
+    if ((b4 && !prev.b4) || (b5 && !prev.b5)) setActiveTile(null);
     padState.set(src, { b4, b5 });
     const y = gp.axes[3] || 0;
     if (Math.abs(y) > 0.3 && now - lastScrollAt > 90) {
-      const c = controllers[src.handedness === 'left' ? 0 : 1]; const hit = c && pickHit(c); const sc = hit && screenOf(hit.object);
-      if (sc && sc.focused && hit.object === sc.mesh) { lastScrollAt = now; post('/input', { wid: sc.wid, type: 'scroll', ...uvOf(hit), dx: 0, dy: y * 60 }); }
+      const c = controllers[src.handedness === 'left' ? 0 : 1]; const hit = c && pickHit(c); const p = hit && tileOf(hit.object);
+      if (p && p.focused) { lastScrollAt = now; post('/input', { wid: p.wid, type: 'scroll', ...uvOf(hit), dx: 0, dy: y * 60 }); }
     }
   }
   if (now - lastMoveAt > 80) {
-    for (const c of controllers) { const hit = pickHit(c); const sc = hit && screenOf(hit.object); if (sc && sc.focused && hit.object === sc.mesh) { lastMoveAt = now; post('/input', { wid: sc.wid, type: 'move', ...uvOf(hit) }); break; } }
+    for (const c of controllers) { const hit = pickHit(c); const p = hit && tileOf(hit.object); if (p && p.focused) { lastMoveAt = now; post('/input', { wid: p.wid, type: 'move', ...uvOf(hit) }); break; } }
   }
 }
 
@@ -749,8 +676,6 @@ renderer.setAnimationLoop(() => {
   gazeAz += d * CLOUD.follow;
   gazeEl += (THREE.MathUtils.clamp(headPitch, -0.7, 0.7) - gazeEl) * CLOUD.follow;
   updateGrabs();
-  if (grabs.size) separateScreens();
-  placeStageTitle();
   layoutCloud();
   placeMosaic();
   placeKeyboard();
