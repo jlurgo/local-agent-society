@@ -46,6 +46,7 @@ const os = require('node:os');
 const { spawn, execFile } = require('node:child_process');
 const Store = require('electron-store');
 const { createTray } = require('./tray');
+const { createBubbles } = require('./bubbles');
 const spaces = require('./lib/spaces');
 
 // Real protocol scheme, claimed by this Electron app as of the full cutover
@@ -60,20 +61,67 @@ const REGISTRY_URL = process.env.LAS_REGISTRY_URL || 'http://localhost:8700';
 // ── persistent logging (session/widget.log) ─────────────────────────────────
 // Launched via `open` (see start.sh), so this process's stdout/stderr goes
 // nowhere any tool can read — console.log/warn here were silent in practice.
-// This app has always assumed one fixed checkout of this repo (see the
-// hardcoded vortexia file: dependency in package.json); resolving the log
-// path the same way keeps this working both unpacked (`npm start`, __dirname
-// is widget-electron/) and packaged (__dirname is inside app.asar, so the
-// repo-relative candidate doesn't exist and we fall back to the known
-// checkout path). Format matches the project-wide convention documented in
-// the log-debug skill and tailed by `/log-debug ui`:
+// The log lives in the checkout's `session/` dir — the same file
+// restart-widget.sh tails for its mic guard and `/log-debug ui` reads. The
+// checkout is found by walking up from __dirname looking for the repo's own
+// markers (start.sh + backend/main.py): unpacked (`npm start`) __dirname is
+// widget-electron/, packaged it is inside widget-electron/dist/.../app.asar,
+// and both sit under the checkout, wherever that checkout is and whoever's
+// machine this is. (It used to fall back to one developer's hardcoded path,
+// so on any other machine the packaged app silently logged nothing.) When
+// no checkout is found at all, log under the OS's per-app logs dir rather
+// than nowhere. Format matches the project-wide convention documented in
+// the log-debug skill:
 //   [ISO8601_TIMESTAMP] LEVEL [component] message
+function findCheckoutRoot(from = __dirname) {
+  let dir = from;
+  for (let i = 0; i < 10; i++) {
+    if (fs.existsSync(path.join(dir, 'start.sh')) && fs.existsSync(path.join(dir, 'backend', 'main.py'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
 function resolveSessionLogPath() {
-  const devPath = path.join(__dirname, '..', 'session', 'widget.log');
-  if (fs.existsSync(path.dirname(devPath))) return devPath;
-  return '/Users/josetabuyo/Development/local-agent-society/session/widget.log';
+  const root = findCheckoutRoot();
+  const dir = root ? path.join(root, 'session') : app.getPath('logs');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    // best-effort — writeLog below is already best-effort
+  }
+  return path.join(dir, 'widget.log');
 }
 const SESSION_LOG_PATH = resolveSessionLogPath();
+
+// The face (the renderer dir) and preload.js are loaded from the CHECKOUT's
+// widget-electron/ when there is one, not from the copy frozen inside
+// app.asar at build time — so a CSS/HTML/renderer/preload change is live on
+// the next reload (`las widgets --reload`, the tray's "Reload widgets", or
+// `localagentsociety://?action=reload`) with no rebuild and no restart.
+// Right after a build the two copies are identical, so nothing changes for
+// a user who never edits the checkout. main.js itself still needs
+// `npm run build` + restart-widget.sh: it IS the running process.
+function resolveWidgetSources() {
+  const root = findCheckoutRoot();
+  const live = root ? path.join(root, 'widget-electron') : null;
+  // Each file from the checkout when it has it, else the packaged copy —
+  // so a checkout older than the build (a file this build added) still runs.
+  const pick = (...rel) => {
+    const candidate = live ? path.join(live, ...rel) : null;
+    return candidate && fs.existsSync(candidate) ? candidate : path.join(__dirname, ...rel);
+  };
+  const preloadPath = pick('preload.js');
+  return {
+    rendererDir: path.dirname(pick('renderer', 'index.html')),
+    preloadPath,
+    bubbleDir: path.dirname(pick('renderer', 'bubble.html')),
+    bubblePreloadPath: pick('bubble-preload.js'),
+    live: Boolean(live) && preloadPath !== path.join(__dirname, 'preload.js'),
+  };
+}
+const WIDGET_SOURCES = resolveWidgetSources();
 
 function writeLog(level, component, message) {
   try {
@@ -212,8 +260,12 @@ function handleProtocolUrl(rawUrl) {
   } catch {
     // malformed percent-encoding — fall back to the raw string
   }
-  if (!name) return;
   const action = parsed.searchParams.get('action');
+  if (action === 'reload') {
+    reloadWidgets(name || null);
+    return;
+  }
+  if (!name) return;
 
   if (action === 'reopen') {
     reopenWidget(name);
@@ -375,7 +427,7 @@ function createWidgetWindow(name, { forgetPosition = false } = {}) {
     transparent: true,
     backgroundColor: '#00000000',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: WIDGET_SOURCES.preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
       // sandbox:false so preload.js can `require('./lib/voiceHash')` (a local,
@@ -409,7 +461,7 @@ function createWidgetWindow(name, { forgetPosition = false } = {}) {
   // widget.css's placeholder green while waiting on the async
   // window.las.getPrefs() IPC round-trip (see widget.js's initialParams
   // block, right below where agentName is read).
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'), {
+  win.loadFile(path.join(WIDGET_SOURCES.rendererDir, 'index.html'), {
     query: { agent: name, color: prefs.color, opacity: String(prefs.opacity) },
   });
 
@@ -568,6 +620,9 @@ const DEFAULT_PREFS = {
   // On by default per explicit request — most agents on this machine want
   // the ambient "still here" banner while off-Space/occluded.
   expandWhenHidden: true,
+  // What this agent says out loud also pops up as a speech bubble at the
+  // screen edge when its widget is on another Space (see bubbles.js).
+  speechBubbles: true,
   // Mic dictation language hint for Whisper — independent of the agent's
   // TTS voice locale (an agent can speak English while being dictated to in
   // Spanish). Defaults to Spanish per explicit request; 'auto' lets Whisper
@@ -646,12 +701,47 @@ ipcMain.on('window:set-expanded', (event, expanded, height) => {
     }
     const b = win.getBounds();
     win.setBounds({ x: b.x, y: b.y, width: b.width, height: height || EXPANDED_HEIGHT });
-  } else if (expandedWindows.has(win)) {
-    expandedWindows.delete(win);
-    const prev = collapsedBounds.get(win);
-    if (prev) win.setBounds(prev);
+  } else {
+    collapseDrawer(win);
   }
 });
+
+function collapseDrawer(win) {
+  if (!expandedWindows.has(win)) return;
+  expandedWindows.delete(win);
+  const prev = collapsedBounds.get(win);
+  if (prev) win.setBounds(prev);
+}
+
+// ── reload the face without restarting the app ─────────────────────────────
+// Re-runs the renderer (and its preload) in place, picking up whatever is
+// in the checkout's widget-electron/renderer + preload.js (see
+// WIDGET_SOURCES). Main-process state that the fresh renderer can't know is
+// pushed back to it once it has loaded: a grown (mosaic) face, the mic
+// hold. A drawer main still thinks is open is closed first, or the window
+// would stay tall around a panel that no longer exists. A window whose mic
+// is recording is skipped — a reload would lose the dictation — and logged;
+// `las widgets --reload` waits for an idle mic before asking at all.
+function reloadWidgets(name = null) {
+  const targets = name ? [windows.get(name)].filter(Boolean) : [...windows.values()];
+  let done = 0;
+  for (const win of targets) {
+    if (win.isDestroyed()) continue;
+    if (recordingWindows.has(win.agentName)) {
+      log.warn('reload', `${win.agentName}: skipped — mic is recording`);
+      continue;
+    }
+    collapseDrawer(win);
+    win.webContents.once('did-finish-load', () => {
+      if (win.isDestroyed()) return;
+      if (occlusionExpandedWindows.has(win)) win.webContents.send('window:occlusion-state', true);
+      if (recordingWindows.size > 0) win.webContents.send('mic:held', true);
+    });
+    win.webContents.reload();
+    done += 1;
+  }
+  log.info('reload', `${done}/${targets.length} widget${targets.length === 1 ? '' : 's'} reloaded${name ? ` (${name})` : ''} from ${WIDGET_SOURCES.live ? WIDGET_SOURCES.rendererDir : 'the packaged app'}`);
+}
 
 // "Expand when hidden" — restores the retired Swift widget's "Expand on
 // space change" feature (Prefs.expandOnSpaceChange / activeSpaceChanged in
@@ -767,15 +857,40 @@ function seedFor(key) {
 // latches compact instead of looping.
 //
 // Calm by design (no hurry: the grown face is only seen in Mission Control):
-// a change of mind must hold TILE_EXPAND_SETTLE_MS / TILE_COLLAPSE_SETTLE_MS
-// before acting, so a Space swipe back and forth or a Mission Control glance
-// never makes a widget pump. Audit: every transition and every miss goes to
-// session/widget.log ([tiles]), and the full current picture to
+// a change of mind must hold TILE_EXPAND_SETTLE_MS / the shrink delay before
+// acting, so a Space swipe back and forth or a Mission Control glance never
+// makes a widget pump. The grow side is what guards against pumping (a quick
+// glance away never grows), so the shrink side can be quick: the user is
+// looking at the banner while it waits. Audit: every transition and every
+// miss goes to session/widget.log ([tiles]), and the full current picture to
 // session/widget-tiles.json.
+//
+// The heartbeat and the shrink delay are user settings ("All widgets" rows
+// of the settings panel): stored once per app instance (electron-store key
+// `tiles`), applied live to every window of that instance (restart of the
+// heartbeat timer + an immediate reconcile), clamped to TILE_SETTINGS_LIMITS.
+// The constants are the defaults; the test suite runs the reconciler with
+// them.
 
-const TILE_TICK_MS = 1500;              // heartbeat
+const TILE_TICK_MS = 500;               // heartbeat default (one CGS read per window per tick — cheap)
 const TILE_EXPAND_SETTLE_MS = 2500;     // off-Space this long before growing (unseen, so no rush)
-const TILE_COLLAPSE_SETTLE_MS = 1200;   // back on screen this long before shrinking
+const TILE_COLLAPSE_SETTLE_MS = 300;    // shrink delay default: back on screen this long before shrinking
+const TILE_SETTINGS_LIMITS = { tickMs: [100, 10000], collapseSettleMs: [0, 30000] };
+const tileSettings = { tickMs: TILE_TICK_MS, collapseSettleMs: TILE_COLLAPSE_SETTLE_MS };
+
+/** Apply a (possibly partial, possibly garbage) settings patch: unknown keys
+ * ignored, non-numbers ignored, numbers clamped and rounded. Returns a copy
+ * of the resulting settings. */
+function applyTileSettings(patch) {
+  for (const key of Object.keys(TILE_SETTINGS_LIMITS)) {
+    if (!patch || typeof patch !== 'object' || !(key in patch)) continue;
+    const n = Number(patch[key]);
+    if (!Number.isFinite(n)) continue;
+    const [lo, hi] = TILE_SETTINGS_LIMITS[key];
+    tileSettings[key] = Math.round(Math.min(hi, Math.max(lo, n)));
+  }
+  return { ...tileSettings };
+}
 const TILE_FLAP_WINDOW_MS = 60 * 1000;  // more than TILE_FLAP_MAX grows in this window...
 const TILE_FLAP_MAX = 4;
 const TILE_FLAP_LATCH_MS = 2 * 60 * 1000; // ...latches the widget compact this long
@@ -936,7 +1051,7 @@ function reconcileTiles(now = Date.now()) {
     }
     const grown = occlusionExpandedWindows.has(win);
     if (st.want === grown) continue;
-    if (now - st.since < (st.want ? TILE_EXPAND_SETTLE_MS : TILE_COLLAPSE_SETTLE_MS)) {
+    if (now - st.since < (st.want ? TILE_EXPAND_SETTLE_MS : tileSettings.collapseSettleMs)) {
       pending = true;
       continue;
     }
@@ -956,7 +1071,7 @@ function reconcileTiles(now = Date.now()) {
   }
   layoutGrownWidgets();
   writeTilesStatus(now);
-  if (pending) kickTiles(400);
+  if (pending) kickTiles(Math.min(400, tileSettings.tickMs));
 }
 
 let tilesKick = null;
@@ -1138,6 +1253,15 @@ ipcMain.handle('vortexia:send', async (event, toName, text) => {
     log.error('mic', 'vortexia:send failed: could not resolve sending agent for this window');
     return { ok: false, error: 'could not resolve sending agent for this window' };
   }
+  return sendHumanMessage(fromName, toName, text);
+});
+
+/** A human's words for `toName`, on behalf of `fromName`'s widget — a mic
+ * dictation, or a typed reply from a speech bubble. Same path either way:
+ * the backend picks the session (`sessions.target`), the agent's own inbox
+ * is the fallback when the backend is unreachable. */
+async function sendHumanMessage(fromName, toName, text) {
+  const win = windows.get(fromName);
   // First choice: the backend's /agents/send — the one place that knows the
   // recipient's connected sessions and its own `sessions.target` choice
   // (.las-agent.json, docs/adr/0005): last-used session, all of them, or
@@ -1201,6 +1325,124 @@ ipcMain.handle('vortexia:send', async (event, toName, text) => {
     }
     return { ok: false, error: String(err) };
   }
+}
+
+// ── speech bubbles (bubbles.js) ────────────────────────────────────────────
+// What an agent says out loud (a `kind: "speak"` envelope — the short
+// spoken summary of its results) also pops up at the screen edge, on the
+// side its Space lies, when its widget is NOT on the Space being looked at.
+// On the current Space the face itself shows the text, so no bubble. The
+// bubble's buttons come back here as actions: go there, answer by voice
+// (go there and start a dictation), answer by text (same delivery as a
+// dictation).
+//
+// WHEN: together with the voice, not with the envelope. Synthesis happens
+// after the envelope arrives (and on a loaded machine can take a minute or
+// more), and the backend's speaker lock serializes agents — so an envelope
+// is only REMEMBERED here, and the bubble is shown by the widget's own
+// speak ack (queue:ack below): at 'playing' (the clip is starting right
+// now), or at 'skipped (muted)' (a muted agent still "says" it, silently).
+// Any other end of the turn drops it. An envelope without an id (a
+// pre-handshake publisher) can't be acked, so it bubbles at once.
+let bubbles = null;
+const seenSpeakIds = new Set();
+/** @type {Map<string, {name: string, text: string, at: number}>} */
+const pendingBubbles = new Map();
+const PENDING_BUBBLE_MAX_AGE_MS = 15 * 60 * 1000;
+
+function maybeBubble(name, win, envelope) {
+  if (!bubbles || !envelope || envelope.kind !== 'speak') return;
+  const text = typeof envelope.text === 'string' ? envelope.text.trim() : '';
+  if (!text) return;
+  if (text.toLowerCase() === 'ok') return;           // the mic self-test's audible "OK"
+  const prefs = getPrefs(name);
+  if (prefs.speechBubbles === false) return;
+  const id = envelope.id || `${envelope.ts}:${text}`;
+  if (seenSpeakIds.has(id)) return;                   // a reconnect can redeliver
+  seenSpeakIds.add(id);
+  if (seenSpeakIds.size > 500) seenSpeakIds.delete(seenSpeakIds.values().next().value);
+  if (!envelope.id) {
+    showBubble(name, text);
+    return;
+  }
+  const now = Date.now();
+  for (const [k, p] of pendingBubbles) if (now - p.at > PENDING_BUBBLE_MAX_AGE_MS) pendingBubbles.delete(k);
+  pendingBubbles.set(envelope.id, { name, text, at: now });
+}
+
+/** The widget acked its speak turn (queue:ack): show, or forget, its bubble. */
+function bubbleOnSpeakAck(id, phase, reason, refused) {
+  const p = pendingBubbles.get(id);
+  if (!p) return;
+  const show = !refused && (phase === 'playing' || (phase === 'skipped' && reason === 'muted'));
+  if (show || refused || phase === 'done' || phase === 'skipped') pendingBubbles.delete(id);
+  if (show) showBubble(p.name, p.text);
+}
+
+function showBubble(name, text) {
+  const win = windows.get(name);
+  if (!bubbles || !win || win.isDestroyed()) return;
+  const prefs = getPrefs(name);
+  let side;
+  const order = spaces.getSpaceOrderForWindow(win);
+  if (order) {
+    if (order.index === order.currentIndex) return;   // on screen: the face shows it
+    side = order.index < order.currentIndex ? 'left' : 'right';
+  } else {
+    // No order (API gone, non-macOS): still bubble when known to be
+    // off-Space, or when nothing is known at all — never when known on-Space.
+    const space = spaces.getSpaceForWindow(win);
+    const current = space != null ? spaces.getCurrentSpaceForWindow(win) : null;
+    if (space != null && current != null && space === current) return;
+    side = 'right';
+  }
+  const display = screen.getDisplayMatching(collapsedBounds.get(win) || win.getBounds());
+  bubbles.show({ agentName: name, text, color: prefs.color, opacity: prefs.opacity, side, display });
+}
+
+/** Bring an agent's widget to the user: macOS switches to its Space when
+ * its window is focused. (The exact effect the grown banner must never
+ * cause by accident — see the Space-memory comments in createWidgetWindow —
+ * done here on purpose, on a click.) */
+function focusWidget(name) {
+  const win = windows.get(name);
+  if (!win || win.isDestroyed()) {
+    openWidget(name);
+    return;
+  }
+  win.show();
+  app.focus({ steal: true });
+  win.focus();
+  log.info('bubble', `${name}: focused (Space switch)`);
+}
+
+function onBubbleAction(kind, name, payload) {
+  payload = payload || {};
+  const win = windows.get(name);
+  if (kind === 'open') {
+    focusWidget(name);
+  } else if (kind === 'voice' || kind === 'mic-stop' || kind === 'mic-cancel') {
+    // The widget records, transcribes and sends from its own Space, unseen;
+    // the bubble shows the phases (mic:status below). No Space switch.
+    const command = kind === 'voice' ? 'start' : kind === 'mic-stop' ? 'stop' : 'cancel';
+    if (win && !win.isDestroyed()) win.webContents.send('mic:request', command);
+    else if (bubbles) bubbles.micStatus(name, 'failed', { error: 'widget not open' });
+  } else if (kind === 'reply') {
+    const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+    if (!text) return;
+    sendHumanMessage(name, name, text).then((r) => {
+      if (!r || !r.ok) log.error('bubble', `${name}: reply not delivered: ${r && r.error}`);
+    });
+  }
+}
+
+ipcMain.on('bubble:action', (event, kind, payload) => {
+  if (bubbles) bubbles.handle(event, kind, payload);
+});
+
+// A widget's dictation phases (renderer reportMic) → the bubble that asked.
+ipcMain.on('mic:status', (_event, name, state, detail) => {
+  if (bubbles) bubbles.micStatus(name, state, detail);
 });
 
 // ── face buttons: this agent's voice + locale (for mic STT + TTS pickVoice) ─
@@ -1534,12 +1776,13 @@ function getWhisperPipeline(onProgress) {
  *   from the agent's resolved TTS locale, or null to let Whisper auto-detect
  * @returns {Promise<string>}
  */
-async function transcribeAudio(win, pcmFloat32, languageHint) {
+async function transcribeAudio(win, pcmFloat32, languageHint, { live = false } = {}) {
+  const lvl = live ? 'debug' : 'info'; // a live pass every couple of seconds must not flood the log
   const send = (status) => {
     if (win && !win.isDestroyed()) win.webContents.send('audio:status', status);
   };
   const durationS = (pcmFloat32.length / 16000).toFixed(1);
-  log.info('mic', `transcribe: start samples=${pcmFloat32.length} (~${durationS}s) language=${languageHint || 'auto'}`);
+  log[lvl]('mic', `transcribe: start samples=${pcmFloat32.length} (~${durationS}s) language=${languageHint || 'auto'}`);
   const startedAt = Date.now();
   const modelAlreadyLoaded = whisperPipelinePromise !== null;
   if (!modelAlreadyLoaded) send({ state: 'loading-model' });
@@ -1574,7 +1817,7 @@ async function transcribeAudio(win, pcmFloat32, languageHint) {
     }
   }
   const text = (output && output.text ? output.text : '').trim();
-  log.info('mic', `transcribe: done in ${Date.now() - startedAt}ms, ${text.length} chars`);
+  log[lvl]('mic', `transcribe: done in ${Date.now() - startedAt}ms, ${text.length} chars`);
   return text;
 }
 
@@ -1586,11 +1829,11 @@ ipcMain.on('log:write', (_event, level, component, message) => {
   writeLog(String(level || 'INFO'), String(component || 'widget'), String(message || ''));
 });
 
-ipcMain.handle('audio:transcribe', async (event, pcmBuffer, languageHint) => {
+ipcMain.handle('audio:transcribe', async (event, pcmBuffer, languageHint, opts) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   try {
     const pcm = new Float32Array(pcmBuffer);
-    const text = await transcribeAudio(win, pcm, languageHint || null);
+    const text = await transcribeAudio(win, pcm, languageHint || null, { live: Boolean(opts && opts.live) });
     return { ok: true, text };
   } catch (err) {
     log.error('mic', `audio:transcribe IPC failed: ${err && err.stack ? err.stack : err}`);
@@ -1672,9 +1915,11 @@ ipcMain.handle('queue:ack', async (_event, id, phase, reason, durationMs) => {
     } else {
       log.info('tts', `${tag} ${phase}${reason ? ` (${reason})` : ''}`);
     }
+    bubbleOnSpeakAck(id, phase, reason, res.ok && json.known === false && phase === 'playing');
     return { ok: res.ok, ...json };
   } catch (err) {
     log.warn('tts', `${tag} ack ${phase} failed: ${err && err.message ? err.message : err}`);
+    bubbleOnSpeakAck(id, phase, reason, false); // the widget plays anyway when the lock is unreachable
     return { ok: false, error: String(err) };
   }
 });
@@ -1715,6 +1960,7 @@ async function connectVortexia(name, win) {
     // only forward speak requests actually addressed to this agent.
     if (envelope && envelope.kind === 'speak' && envelope.to !== name) return;
     win.webContents.send('vortexia:message', envelope, topic);
+    maybeBubble(name, win, envelope);
   });
 
   // The underlying MQTT client never retries on its own (see client.js's
@@ -1824,7 +2070,8 @@ app.whenReady().then(async () => {
     callback(permission === 'media');
   });
 
-  createTray({ registryUrl: REGISTRY_URL, onSelectAgent: openWidget, onQuit: () => app.quit() });
+  createTray({ registryUrl: REGISTRY_URL, onSelectAgent: openWidget, onReload: () => reloadWidgets(), onQuit: () => app.quit() });
+  bubbles = createBubbles({ sources: WIDGET_SOURCES, log, onAction: onBubbleAction });
 
   // System sleep/wake: the occlusion-expand/mosaic feature (see
   // the tile reconciler below) drives off document.visibilitychange,
@@ -1879,8 +2126,29 @@ app.whenReady().then(async () => {
   // replacement for the event-driven paths above.
   setInterval(resyncAllOcclusion, 5 * 60 * 1000);
 
-  // The tile reconciler's heartbeat (see "tile reconciler" above).
-  setInterval(() => reconcileTiles(), TILE_TICK_MS);
+  // The tile reconciler's heartbeat (see "tile reconciler" above), at the
+  // user's chosen rate; restarted whenever the rate changes.
+  applyTileSettings(store.get('tiles'));
+  let tileHeartbeat = null;
+  const startTileHeartbeat = () => {
+    if (tileHeartbeat) clearInterval(tileHeartbeat);
+    tileHeartbeat = setInterval(() => reconcileTiles(), tileSettings.tickMs);
+  };
+  startTileHeartbeat();
+  ipcMain.handle('tiles:get', () => ({ ...tileSettings, limits: TILE_SETTINGS_LIMITS, defaults: { tickMs: TILE_TICK_MS, collapseSettleMs: TILE_COLLAPSE_SETTLE_MS } }));
+  ipcMain.handle('tiles:set', (_event, patch) => {
+    const before = { ...tileSettings };
+    const next = applyTileSettings(patch);
+    store.set('tiles', next);
+    if (next.tickMs !== before.tickMs) startTileHeartbeat();
+    log.info('tiles', `settings: heartbeat ${next.tickMs}ms, shrink delay ${next.collapseSettleMs}ms`);
+    kickTiles();
+    // Every window of this instance shows the same two numbers.
+    for (const win of windows.values()) {
+      if (!win.isDestroyed()) win.webContents.send('tiles:changed', next);
+    }
+    return next;
+  });
 
   const explicit = resolveInitialAgentNames(process.argv);
   if (explicit) {

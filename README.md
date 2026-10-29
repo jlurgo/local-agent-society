@@ -100,6 +100,8 @@ las agents --inactive                   # list only inactive (put-away) agents
 las agents --active                     # list only active agents
 las widget [NAME]                       # reopen one agent's floating widget (new position, keeps color/prefs)
 las widgets                             # reopen every registered agent's widget
+las widget [NAME] --reload              # re-run one widget's face from the checkout (no rebuild, no restart)
+las widgets --reload [--force]          # same for every open widget; waits for an in-flight dictation unless --force
 las link [--agent NAME] [--tty PATH]    # link the current (or given) terminal to a widget
 ```
 `NAME` is optional on most `agent` subcommands — it defaults to the agent registered for the current directory (via `.las-agent.json` or a path match in the backend registry).
@@ -279,10 +281,13 @@ screen; the widget's own name/log stay visible above it:
   regardless, so the widget stays readable even very transparent.
 - **Always on top**
 - **Mute**
+- **Speech bubbles** (on by default) — what this agent says out loud also
+  pops up as a bubble at the screen edge when its widget is on another
+  Space; see **Speech bubbles** below.
 - **Expand when hidden** (on by default) — while occluded/off-Space, the
   widget balloons to a big, click-through, full-screen name banner instead
-  of just disappearing; shrinks back `RESTORE_DELAY_MS` (2s by default,
-  `widget-electron/renderer/widget.js`) after becoming visible again.
+  of just disappearing; shrinks back once its Space is on screen again (see
+  **Shrink delay** below).
   When several widgets share the same macOS Space, they tile that Space's
   screen as a mosaic (halves for 2, one of five layouts for 3, a 2-column
   grid for 4+) instead of overlapping — grouped per `(display, Space)`, not
@@ -291,12 +296,68 @@ screen; the widget's own name/log stay visible above it:
 - **Wake up via vortexia** — lets `las agent focus` wake this agent from
   inactive (see the CLI table above) instead of reporting "not found".
 - **Dictation language**
+- **All widgets → Shrink delay (ms)** (300 by default) — how long a grown
+  widget stays big after you switch back to its Space before it shrinks.
+  Lower is snappier; raise it if it shrinks mid-animation.
+- **All widgets → Heartbeat (ms)** (500 by default) — how often every widget
+  checks which Space it is on. The shrink lands within one heartbeat plus the
+  shrink delay. These two are shared by every widget of the running app, not
+  per agent: change them in any widget's panel and all panels follow.
 
 The agent's name auto-fits its box: it shrinks to the widest size that still
 fits on one line, and if it still doesn't fit, breaks at whichever generic
 title boundary (a space, a hyphen, or a lowercase→Uppercase transition)
 falls closest to the middle — same rule in both the compact face and the
 expanded/mosaic banner, just with a much bigger target size in the latter.
+
+## Speech bubbles
+
+When an agent speaks (the short spoken summary of its results, `las speak`)
+and its widget is on a Space other than the one you are looking at, a
+bubble in the agent's color slides in at the edge of the screen on the side
+that Space lies — left if the agent's Space is to the left of the current
+one in Mission Control order, right otherwise. Bubbles pile up from the
+bottom corner of that side (newest at the bottom, older ones pushed up, one
+pile per side), never take focus when they appear, and go away on their own
+after 20 s unless the pointer is over one or a text answer is open.
+
+- **Click the text** → macOS switches to that agent's Space (its widget is
+  focused).
+- **🎤 Voice** → the agent's widget starts a dictation where it is, unseen
+  (no Space switch), and the bubble becomes its face: a pulsing dot, the
+  elapsed time and **the words as they come** (a live Whisper pass every
+  couple of seconds over the audio since the last commit point; the text
+  sent at the end is one transcription of the whole recording), **➤** sends,
+  **🗑** discards, then "Transcribing…" and "Sent: …" (or the failure), and
+  the bubble closes itself.
+- **⌨ Text** → an input in the bubble; Enter sends. The answer takes the
+  exact path of a dictation (from the agent, to the agent, source human),
+  so the agent's `sessions.target` decides which session gets it.
+- **✕** or Esc → dismiss.
+
+No bubble when the agent is on the current Space (its face already shows
+the text), and none at all for an agent whose **Speech bubbles** setting is
+off. Direction comes from a private macOS call (`lib/spaces.js`); if it is
+ever unavailable, bubbles still appear, on the right.
+
+## Editing the widget
+
+The running app is the packaged build in `widget-electron/dist/`, but its
+face is not frozen in there: the renderer (`widget-electron/renderer/`) and
+`preload.js` are loaded from the checkout whenever the app finds one (it
+walks up from its own location to `start.sh` + `backend/main.py`). So:
+
+- **renderer / CSS / HTML / preload change** → `las widgets --reload` (or the
+  tray's *Reload widgets*, or `open 'localagentsociety://?action=reload'`).
+  Every open widget re-runs its face in place; a grown (mosaic) face and a
+  held mic are pushed back to it. A widget whose mic is recording is skipped
+  and the CLI waits for an idle mic before asking at all. The on-face message
+  log is cleared by the reload.
+- **`main.js` / `tray.js` / `lib/` change** → `npm run build` in
+  `widget-electron/`, then `./restart-widget.sh`: that is the running
+  process itself.
+
+Tests: `npm test` in `widget-electron/` (node's built-in runner).
 
 ---
 

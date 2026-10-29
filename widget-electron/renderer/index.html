@@ -50,6 +50,10 @@
         <input id="expandWhenHidden" type="checkbox" />
       </div>
       <div class="settings-row">
+        <label for="speechBubbles" title="What this agent says also pops up at the screen edge when its widget is on another Space">Speech bubbles</label>
+        <input id="speechBubbles" type="checkbox" />
+      </div>
+      <div class="settings-row">
         <label for="wakeEnabled">Wake up via vortexia</label>
         <input id="wakeEnabled" type="checkbox" />
       </div>
@@ -73,6 +77,16 @@
           <option value="fr">Français</option>
           <option value="auto">Auto-detect</option>
         </select>
+      </div>
+      <!-- Shared by every widget (main.js tile reconciler), not per agent. -->
+      <div class="settings-row settings-group">All widgets</div>
+      <div class="settings-row">
+        <label for="tileShrinkMs" title="How long a widget stays big after its Space is back on screen">Shrink delay (ms)</label>
+        <input id="tileShrinkMs" type="number" min="0" max="30000" step="100" />
+      </div>
+      <div class="settings-row">
+        <label for="tileTickMs" title="How often every widget checks which Space it is on">Heartbeat (ms)</label>
+        <input id="tileTickMs" type="number" min="100" max="10000" step="100" />
       </div>
     </div>
 

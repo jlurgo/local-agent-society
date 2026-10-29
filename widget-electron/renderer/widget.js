@@ -33,10 +33,13 @@ const opacityEl = document.getElementById('opacity');
 const alwaysOnTopEl = document.getElementById('alwaysOnTop');
 const muteEl = document.getElementById('mute');
 const expandWhenHiddenEl = document.getElementById('expandWhenHidden');
+const speechBubblesEl = document.getElementById('speechBubbles');
 const wakeEnabledEl = document.getElementById('wakeEnabled');
 const micLanguageEl = document.getElementById('micLanguage');
 const micTargetEl = document.getElementById('micTarget');
 const ccDefaultEl = document.getElementById('ccDefault');
+const tileShrinkMsEl = document.getElementById('tileShrinkMs');
+const tileTickMsEl = document.getElementById('tileTickMs');
 const doorEl = document.getElementById('door');
 
 document.title = agentName;
@@ -179,7 +182,7 @@ function updateNameCenterOffset(size, text) {
 // locale — per explicit request: dictation should assume Spanish unless the
 // user picks otherwise, since it's what most agents on this machine are
 // dictated to in regardless of what language their own TTS voice speaks.
-let prefs = { color: '#90c060', opacity: 0.72, alwaysOnTop: true, mute: false, expandWhenHidden: true, micLanguage: 'es' };
+let prefs = { color: '#90c060', opacity: 0.72, alwaysOnTop: true, mute: false, expandWhenHidden: true, speechBubbles: true, micLanguage: 'es' };
 let locale = 'en-US';
 // Optional Kokoro voice id pinned in this agent's .las-agent.json (`tts_voice`,
 // e.g. "em_alex"). When set and known to the pool it beats the name hash in
@@ -279,6 +282,7 @@ function applyPrefsToDom() {
   alwaysOnTopEl.checked = !!prefs.alwaysOnTop;
   muteEl.checked = !!prefs.mute;
   expandWhenHiddenEl.checked = !!prefs.expandWhenHidden;
+  speechBubblesEl.checked = prefs.speechBubbles !== false;
   micLanguageEl.value = prefs.micLanguage || 'es';
   syncMicTargetSelect();
   updateSpeakerIcon();
@@ -287,6 +291,7 @@ function applyPrefsToDom() {
 async function init() {
   prefs = await window.las.getPrefs(agentName);
   applyPrefsToDom();
+  initTileSettings();
   reportVisibility();   // tells main whether this agent may grow (expandWhenHidden)
   // The mic's target is the agent's own choice (its .las-agent.json), not a
   // window pref — see the children button section.
@@ -400,6 +405,41 @@ async function persist(patch) {
   if (prefs.mute) stopCurrentSpeech();
 }
 
+// ── "All widgets" rows: the tile reconciler's heartbeat and shrink delay ──
+// Not a pref of this agent: one value per app instance, decided in main
+// (see main.js "tile reconciler"), shown identically in every widget's panel.
+function applyTileSettingsToDom(settings) {
+  if (!settings) return;
+  tileShrinkMsEl.value = String(settings.collapseSettleMs);
+  tileTickMsEl.value = String(settings.tickMs);
+}
+
+async function initTileSettings() {
+  try {
+    const s = await window.las.getTileSettings();
+    if (s && s.limits) {
+      [tileShrinkMsEl.min, tileShrinkMsEl.max] = s.limits.collapseSettleMs.map(String);
+      [tileTickMsEl.min, tileTickMsEl.max] = s.limits.tickMs.map(String);
+      tileShrinkMsEl.placeholder = String(s.defaults.collapseSettleMs);
+      tileTickMsEl.placeholder = String(s.defaults.tickMs);
+    }
+    applyTileSettingsToDom(s);
+  } catch (err) {
+    console.warn('[widget] could not read tile settings:', err);
+  }
+}
+
+// 'change' (not 'input'): a value is sent once the field is left or Enter is
+// pressed, never on every keystroke while a number is being typed. Main
+// clamps and answers with what it actually applied.
+tileShrinkMsEl.addEventListener('change', async () => {
+  applyTileSettingsToDom(await window.las.setTileSettings({ collapseSettleMs: tileShrinkMsEl.value }));
+});
+tileTickMsEl.addEventListener('change', async () => {
+  applyTileSettingsToDom(await window.las.setTileSettings({ tickMs: tileTickMsEl.value }));
+});
+window.las.onTileSettings(applyTileSettingsToDom);
+
 colorEl.addEventListener('input', () => persist({ color: colorEl.value }));
 opacityEl.addEventListener('input', () => persist({ opacity: Number(opacityEl.value) }));
 alwaysOnTopEl.addEventListener('change', () => persist({ alwaysOnTop: alwaysOnTopEl.checked }));
@@ -408,6 +448,7 @@ expandWhenHiddenEl.addEventListener('change', () => {
   persist({ expandWhenHidden: expandWhenHiddenEl.checked });
   reportVisibility();
 });
+speechBubblesEl.addEventListener('change', () => persist({ speechBubbles: speechBubblesEl.checked }));
 micLanguageEl.addEventListener('change', () => persist({ micLanguage: micLanguageEl.value }));
 micTargetEl.addEventListener('change', () => setSessionsConfig({ target: micTargetEl.value }));
 ccDefaultEl.addEventListener('change', () => setSessionsConfig({ cc_default: ccDefaultEl.checked }));
@@ -446,7 +487,7 @@ let visibilityDebounce = null;
 // How long to wait, after the widget becomes visible again, before shrinking
 // back down to the compact face — separate from the (short, fixed) debounce
 // on the way INTO occlusion below. Easy to tune: just this one constant.
-const RESTORE_DELAY_MS = 1000;
+const RESTORE_DELAY_MS = 0; // main's reconciler has its own collapse settle; report at once so it reacts at once
 
 // Main decides whether this widget is grown (main.js "tile reconciler": by
 // macOS Space, not by occlusion) — the renderer only reports its visibility,
@@ -466,9 +507,9 @@ document.addEventListener('visibilitychange', () => {
   if (visibilityDebounce) clearTimeout(visibilityDebounce);
   const hidden = document.visibilityState === 'hidden';
   // Going hidden: short debounce, just enough to skip brief flickers (e.g. a
-  // menu momentarily covering the widget). Coming back visible: the longer,
-  // configurable RESTORE_DELAY_MS — don't yank the banner away the instant
-  // you glance back at the Space.
+  // menu momentarily covering the widget). Coming back visible: report at
+  // once (RESTORE_DELAY_MS) — main's reconciler applies its own short
+  // collapse settle, and the user is looking at the banner while it waits.
   visibilityDebounce = setTimeout(() => {
     if (!prefs.expandWhenHidden) return;
     reportVisibility();
@@ -1041,12 +1082,21 @@ const MAX_RECORDING_MS = 5400000; // 90 min safety net if the user forgets to cl
 let mediaRecorder = null;
 let recordedChunks = [];
 let micState = 'idle'; // 'idle' | 'listening' | 'transcribing'
+let discardRecording = false; // a bubble's cancel: stop, throw the audio away, send nothing
 let maxDurationTimer = null;
 let countdownTimers = [];
+
+// The phases of a dictation, for whoever asked for it from outside this
+// window — a speech bubble (main.js → bubbles.js) shows them in place:
+// listening / transcribing / sent {text} / failed {error} / cancelled / idle.
+function reportMic(state, detail) {
+  window.las.micStatus(agentName, state, detail || null);
+}
 
 function setMicState(next) {
   if ((next === 'listening') !== (micState === 'listening')) window.las.setMicRecording(agentName, next === 'listening');
   micState = next;
+  reportMic(next);
   micEl.classList.toggle('active', next === 'listening');
   micEl.classList.toggle('busy', next === 'transcribing');
   if (next === 'listening') {
@@ -1263,6 +1313,8 @@ async function stopRecordingAndTranscribe() {
   if (!recorder) return;
 
   window.las.log('info', 'mic', 'stop clicked — flushing recorder');
+  const liveSt = stopLiveTranscription();
+  if (liveSt && liveSt.inFlight) await liveSt.inFlight.catch(() => {});   // never two Whisper runs at once
   await new Promise((resolve) => {
     if (recorder.state === 'inactive') {
       resolve();
@@ -1272,6 +1324,14 @@ async function stopRecordingAndTranscribe() {
     recorder.stop();
   });
   recorder.stream.getTracks().forEach((track) => track.stop());
+  if (discardRecording) {
+    discardRecording = false;
+    recordedChunks = [];
+    window.las.log('info', 'mic', 'cancelled — audio discarded, nothing sent');
+    setMicState('idle');
+    reportMic('cancelled');
+    return;
+  }
 
   if (!recordedChunks.length) {
     window.las.log('warn', 'mic', 'stop: no audio chunks recorded — nothing to transcribe');
@@ -1320,24 +1380,133 @@ async function stopRecordingAndTranscribe() {
       // own `sessions.target` in its .las-agent.json, applied by the
       // backend when it routes the send (docs/adr/0005).
       const sendResult = await window.las.sendToSelf(agentName, result.text);
+      if (sendResult && sendResult.ok) reportMic('sent', { text: result.text });
       if (!sendResult || !sendResult.ok) {
         window.las.log('error', 'mic', `failed to publish dictation to own inbox: ${sendResult && sendResult.error}`);
+        reportMic('failed', { error: `not delivered: ${sendResult && sendResult.error}` });
         console.warn('[widget] mic: failed to publish dictation to own inbox:', sendResult && sendResult.error);
       } else if (sendResult.fallback_from) {
         window.las.log('warn', 'mic', `target ${sendResult.fallback_from} is not connected — the dictation went to the last-used session`);
       }
     } else if (result && !result.ok) {
       window.las.log('error', 'mic', `transcription failed: ${result.error}`);
+      reportMic('failed', { error: `transcription failed: ${result.error}` });
       console.warn('[widget] mic: transcription failed:', result.error);
     } else {
       window.las.log('warn', 'mic', 'transcription returned ok but empty text — nothing published');
+      reportMic('failed', { error: 'nothing heard' });
     }
   } catch (err) {
     window.las.log('error', 'mic', `transcription pipeline failed: ${err && err.stack ? err.stack : err}`);
+    reportMic('failed', { error: String(err && err.message ? err.message : err) });
     console.warn('[widget] mic: transcription pipeline failed:', err);
   } finally {
     setMicState('idle');
   }
+}
+
+// ── live transcription while recording ─────────────────────────────────────
+// The bubble that asked for a dictation shows the words as they come
+// (reportMic 'partial'). A second tap on the same mic stream feeds 16 kHz
+// PCM into a buffer; every LIVE_TICK_MS (after the previous pass finished —
+// never two Whisper runs at once) the audio since the last commit point is
+// transcribed and shown as the tail; past LIVE_COMMIT_S of tail the words
+// are frozen as committed text and the window starts again, so a pass stays
+// short however long the dictation runs. The final text sent is still ONE
+// transcription of the whole recording (stopRecordingAndTranscribe) — the
+// live words are a preview, and a cut mid-word at a commit point only ever
+// touches the preview.
+const LIVE_TICK_MS = 1500;
+const LIVE_MIN_S = 1.2;
+const LIVE_COMMIT_S = 12;
+let live = null;
+
+function startLiveTranscription(stream) {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  let ctx;
+  try {
+    ctx = new AudioCtx({ sampleRate: 16000 });   // Chromium resamples the mic to the context rate
+  } catch {
+    ctx = new AudioCtx();
+  }
+  const src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const mute = ctx.createGain();
+  mute.gain.value = 0;                             // a processor only runs when wired to the output; never echo the mic
+  const st = { ctx, proc, rate: ctx.sampleRate, chunks: [], total: 0, commitOffset: 0, committed: '', tail: '', inFlight: null, timer: null, stopped: false };
+  proc.onaudioprocess = (e) => {
+    if (st.stopped) return;
+    const d = e.inputBuffer.getChannelData(0);
+    st.chunks.push(new Float32Array(d));
+    st.total += d.length;
+  };
+  src.connect(proc);
+  proc.connect(mute);
+  mute.connect(ctx.destination);
+  live = st;
+  st.timer = setTimeout(liveTick, LIVE_TICK_MS);
+}
+
+function livePcmSince(st, offset) {
+  const out = new Float32Array(Math.max(0, st.total - offset));
+  let pos = 0;
+  let skip = offset;
+  for (const c of st.chunks) {
+    if (skip >= c.length) {
+      skip -= c.length;
+      continue;
+    }
+    const part = skip ? c.subarray(skip) : c;
+    skip = 0;
+    out.set(part, pos);
+    pos += part.length;
+  }
+  return out;
+}
+
+function to16k(pcm, rate) {
+  if (rate === 16000) return pcm;
+  const ratio = rate / 16000;
+  const out = new Float32Array(Math.floor(pcm.length / ratio));
+  for (let i = 0; i < out.length; i++) out[i] = pcm[Math.floor(i * ratio)];
+  return out;
+}
+
+async function liveTick() {
+  const st = live;
+  if (!st || st.stopped) return;
+  const snapshot = st.total;
+  const newSeconds = (snapshot - st.commitOffset) / st.rate;
+  if (newSeconds >= LIVE_MIN_S) {
+    const pcm = to16k(livePcmSince(st, st.commitOffset).subarray(0, snapshot - st.commitOffset), st.rate);
+    const languageHint = prefs.micLanguage && prefs.micLanguage !== 'auto' ? prefs.micLanguage : null;
+    st.inFlight = window.las.transcribeAudio(pcm.buffer, languageHint, { live: true });
+    const res = await st.inFlight.catch(() => null);
+    st.inFlight = null;
+    if (st.stopped) return;
+    if (res && res.ok) {
+      st.tail = (res.text || '').trim();
+      reportMic('partial', { text: `${st.committed} ${st.tail}`.trim() });
+      if (newSeconds >= LIVE_COMMIT_S) {
+        st.committed = `${st.committed} ${st.tail}`.trim();
+        st.tail = '';
+        st.commitOffset = snapshot;
+      }
+    }
+  }
+  st.timer = setTimeout(liveTick, LIVE_TICK_MS);
+}
+
+/** Stops the tap; returns its state so a caller can await an in-flight pass. */
+function stopLiveTranscription() {
+  const st = live;
+  if (!st) return null;
+  st.stopped = true;
+  clearTimeout(st.timer);
+  try { st.proc.disconnect(); } catch { /* already gone */ }
+  st.ctx.close().catch(() => {});
+  live = null;
+  return st;
 }
 
 async function startRecording() {
@@ -1357,6 +1526,11 @@ async function startRecording() {
   mediaRecorder.start();
   setMicState('listening');
   window.las.log('info', 'mic', 'recording started');
+  try {
+    startLiveTranscription(stream);
+  } catch (err) {
+    window.las.log('warn', 'mic', `live transcription unavailable: ${err && err.message ? err.message : err}`);
+  }
   maxDurationTimer = setTimeout(() => {
     window.las.log('warn', 'mic', `max recording duration (${MAX_RECORDING_MS}ms) hit — auto-stopping`);
     stopRecordingAndTranscribe();
@@ -1383,6 +1557,25 @@ micEl.addEventListener('click', (e) => {
   }, 220);
 });
 
+// A speech bubble's "answer by voice" (main.js onBubbleAction) drives this
+// widget's mic from afar — the widget stays on its own Space, the bubble is
+// the face of the dictation (reportMic above): 'start' as if the mic button
+// had been clicked (never interrupting a recording in flight), 'stop' =
+// stop and send, 'cancel' = stop and throw the audio away.
+window.las.onMicRequest((command) => {
+  if (command === 'stop') {
+    if (micState === 'listening') stopRecordingAndTranscribe();
+  } else if (command === 'cancel') {
+    if (micState === 'listening') {
+      discardRecording = true;
+      stopRecordingAndTranscribe();
+    }
+  } else if (micState === 'idle') {
+    startRecording();
+  } else {
+    reportMic('failed', { error: `mic busy (${micState})` });
+  }
+});
 micEl.addEventListener('dblclick', () => {
   if (micClickTimer) {
     clearTimeout(micClickTimer);

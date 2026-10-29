@@ -1,0 +1,266 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>bubble</title>
+  <style>
+    :root {
+      --bubble-color: #90c060;
+      --bubble-ink: #1b1b1b;
+      --bubble-opacity: 0.92;
+      --reveal: 220ms;
+    }
+    html, body {
+      margin: 0;
+      background: transparent;
+      font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+      font-size: 14px;
+      color: var(--bubble-ink);
+      user-select: none;
+      overflow: hidden;
+    }
+    /* The card slides in from the screen edge it hugs; the little tail on
+       that same edge points at where the agent's Space lies. */
+    .card {
+      position: relative;
+      margin: 6px 12px;
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--bubble-color) calc(var(--bubble-opacity) * 100%), transparent);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+      animation: slide-in var(--reveal) ease-out;
+      -webkit-app-region: no-drag;
+    }
+    body.left .card { animation-name: slide-in-left; }
+    .card::before {
+      content: "";
+      position: absolute;
+      top: 18px;
+      width: 0;
+      height: 0;
+      border: 8px solid transparent;
+    }
+    body.right .card::before { right: -14px; border-left-color: var(--bubble-color); }
+    body.left .card::before { left: -14px; border-right-color: var(--bubble-color); }
+    @keyframes slide-in { from { transform: translateX(120%); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes slide-in-left { from { transform: translateX(-120%); opacity: 0; } to { transform: none; opacity: 1; } }
+
+    /* Minimal at rest: the name and the words. The round buttons — the
+       same circles as the widget's face buttons — only appear while the
+       pointer is over the bubble, top-right over the name row. */
+    .head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px 0 12px;
+      min-height: 26px;
+    }
+    .name { font-weight: 700; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .circles {
+      display: flex;
+      gap: 6px;
+      opacity: 0;
+      transition: opacity 140ms ease-out;
+    }
+    .card:hover .circles, body.replying .circles { opacity: 1; }
+    .circle {
+      width: 26px;
+      height: 26px;
+      box-sizing: border-box;
+      border: 2.4px solid rgba(20, 20, 20, 0.55);
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.28);
+      color: #141414;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+    .circle:hover { background: rgba(255, 255, 255, 0.6); }
+    .body {
+      padding: 4px 12px 10px;
+      line-height: 1.35;
+      max-height: 170px;
+      overflow: auto;
+      cursor: pointer;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .body:hover { background: rgba(255, 255, 255, 0.18); border-radius: 8px; }
+    .reply { display: none; gap: 6px; padding: 0 10px 10px; }
+    body.replying .reply { display: flex; }
+    .reply input {
+      flex: 1;
+      min-width: 0;
+      font: inherit;
+      padding: 6px 8px;
+      border-radius: 13px;
+      border: 1px solid rgba(0, 0, 0, 0.22);
+      background: rgba(255, 255, 255, 0.85);
+      color: #111;
+      user-select: text;
+    }
+    /* Voice mode: the head circles give way to the dictation row — a red
+       dot that pulses while listening, the elapsed time, stop-and-send and
+       cancel circles (always visible: this is the feedback). */
+    .mic { display: none; align-items: center; gap: 8px; padding: 0 12px 10px; }
+    body.voice .mic { display: flex; }
+    body.voice .head .circles { display: none; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #d33; flex-shrink: 0; }
+    body.listening .dot { animation: pulse 1s ease-in-out infinite; }
+    body.transcribing .dot { background: #e8a500; }
+    body.sent .dot { background: #2f9e44; }
+    body.failed .dot { background: #666; }
+    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.75); } }
+    .mic .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mic .time { font-variant-numeric: tabular-nums; opacity: 0.8; }
+    .mic .circles { opacity: 1; }
+    /* The words as they come, under the dictation row: a few lines, the
+       newest always in view. */
+    .live { display: none; margin: -4px 12px 10px; padding: 6px 8px; max-height: 5.6em; overflow: auto; line-height: 1.35;
+            border-radius: 8px; background: rgba(255, 255, 255, 0.22); font-size: 13px; user-select: text; white-space: pre-wrap; word-break: break-word; }
+    .live:empty { display: none !important; }
+    body.listening .live, body.transcribing .live { display: block; }
+    body.dark .live { background: rgba(0, 0, 0, 0.22); }
+    body.dark { --bubble-ink: #f4f4f4; }
+    body.dark .circle { border-color: rgba(255, 255, 255, 0.6); color: #f4f4f4; background: rgba(0, 0, 0, 0.22); }
+    body.dark .reply input { background: rgba(0, 0, 0, 0.35); color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="head">
+      <span class="name" id="name"></span>
+      <div class="circles">
+        <button class="circle" id="voice" title="Answer by voice: go to the agent and start a dictation">🎤</button>
+        <button class="circle" id="textBtn" title="Answer by text, right here">⌨</button>
+        <button class="circle" id="dismiss" title="Dismiss (Esc)">✕</button>
+      </div>
+    </div>
+    <div class="body" id="text" title="Go to this agent"></div>
+    <div class="reply">
+      <input id="input" type="text" placeholder="Answer… (Enter sends)" autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="mic">
+      <span class="dot"></span>
+      <span class="label" id="micLabel">Starting the mic…</span>
+      <span class="time" id="micTime"></span>
+      <div class="circles">
+        <button class="circle" id="micSend" title="Send">➤</button>
+        <button class="circle" id="micCancel" title="Discard, send nothing">🗑</button>
+      </div>
+    </div>
+    <div class="live" id="live"></div>
+  </div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const agent = params.get('agent') || '';
+    const text = params.get('text') || '';
+    const color = params.get('color') || '#90c060';
+    const opacity = Math.max(0.85, Math.min(1, Number(params.get('opacity')) || 0.92));
+    const side = params.get('side') === 'left' ? 'left' : 'right';
+
+    document.body.classList.add(side);
+    document.documentElement.style.setProperty('--bubble-color', color);
+    document.documentElement.style.setProperty('--bubble-opacity', String(opacity));
+    // Dark ink on light colors, light ink on dark ones.
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color);
+    if (m) {
+      const [r, g, b] = [m[1], m[2], m[3]].map((h) => parseInt(h, 16) / 255);
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (lum < 0.45) document.body.classList.add('dark');
+    }
+    document.getElementById('name').textContent = agent;
+    document.getElementById('text').textContent = text;
+    document.title = agent;
+
+    const act = (kind, payload) => window.bubble.action(kind, payload);
+    const card = document.getElementById('card');
+    const input = document.getElementById('input');
+
+    // Main sizes the window to the card: report every change (fonts, the
+    // reply row opening, long text wrapping).
+    const report = () => act('size', { height: card.offsetHeight + 12 });
+    new ResizeObserver(report).observe(card);
+    report();
+
+    // The pointer over the bubble, or a reply being typed, holds it open.
+    let replying = false;
+    card.addEventListener('mouseenter', () => act('pin', { on: true }));
+    card.addEventListener('mouseleave', () => act('pin', { on: replying }));
+
+    document.getElementById('dismiss').addEventListener('click', (e) => { e.stopPropagation(); act('dismiss'); });
+    document.getElementById('text').addEventListener('click', () => act('open'));
+    // Voice: the agent's widget records and transcribes from its own Space;
+    // this bubble is the face of that dictation (bubble:mic from main).
+    const micLabel = document.getElementById('micLabel');
+    const micTime = document.getElementById('micTime');
+    const liveEl = document.getElementById('live');
+    let micStart = 0;
+    let micTick = null;
+    const setMic = (state) => {
+      document.body.classList.remove('listening', 'transcribing', 'sent', 'failed');
+      if (state) document.body.classList.add(state);
+    };
+    const fmt = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`;
+    document.getElementById('voice').addEventListener('click', () => {
+      document.body.classList.add('voice');
+      micLabel.textContent = 'Starting the mic…';
+      act('voice');
+    });
+    document.getElementById('micSend').addEventListener('click', () => { micLabel.textContent = 'Sending…'; act('mic-stop'); });
+    document.getElementById('micCancel').addEventListener('click', () => act('mic-cancel')); // always closes (bubbles.js)
+    window.bubble.onMic((state, detail) => {
+      if (state === 'partial') {
+        liveEl.textContent = (detail && detail.text) || '';
+        liveEl.scrollTop = liveEl.scrollHeight;
+      } else if (state === 'listening') {
+        setMic('listening');
+        liveEl.textContent = '';
+        micStart = Date.now();
+        micLabel.textContent = 'Listening…';
+        clearInterval(micTick);
+        micTick = setInterval(() => { micTime.textContent = fmt(Date.now() - micStart); }, 500);
+        micTime.textContent = '0:00';
+      } else if (state === 'transcribing') {
+        setMic('transcribing');
+        clearInterval(micTick);
+        micLabel.textContent = 'Transcribing…';
+      } else if (state === 'sent') {
+        setMic('sent');
+        clearInterval(micTick);
+        micLabel.textContent = `Sent: ${(detail && detail.text) || ''}`;
+        micTime.textContent = '';
+      } else if (state === 'failed') {
+        setMic('failed');
+        clearInterval(micTick);
+        micLabel.textContent = `Failed — ${(detail && detail.error) || 'unknown'}`;
+        micTime.textContent = '';
+      } else if (state === 'cancelled') {
+        clearInterval(micTick);
+        setMic(null);
+        document.body.classList.remove('voice');
+        micTime.textContent = '';
+      }
+    });
+    document.getElementById('textBtn').addEventListener('click', () => {
+      replying = true;
+      document.body.classList.add('replying');
+      act('pin', { on: true });
+      input.focus();
+    });
+    const send = () => {
+      const value = input.value.trim();
+      if (!value) return;
+      act('reply', { text: value });
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') send();
+      if (e.key === 'Escape') act('dismiss');
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') act('dismiss'); });
+  </script>
+</body>
+</html>

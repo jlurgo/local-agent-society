@@ -46,6 +46,14 @@ contextBridge.exposeInMainWorld('las', {
   getPrefs: (name) => ipcRenderer.invoke('prefs:get', name),
   setPrefs: (name, patch) => ipcRenderer.invoke('prefs:set', name, patch),
 
+  /** Tile reconciler settings shared by every widget of this app instance
+   * (main.js "tile reconciler"): heartbeat and shrink delay, in ms. get()
+   * also returns `limits` and `defaults`; set() returns the clamped result. */
+  getTileSettings: () => ipcRenderer.invoke('tiles:get'),
+  setTileSettings: (patch) => ipcRenderer.invoke('tiles:set', patch),
+  /** Another widget changed the tile settings. @param {(settings: object) => void} cb */
+  onTileSettings: (cb) => ipcRenderer.on('tiles:changed', (_e, settings) => cb(settings)),
+
   /** Grow/shrink this window by (dw, dh) pixels — see .resize-handle in widget.css. */
   resizeBy: (dw, dh) => ipcRenderer.send('window:resize-by', dw, dh),
 
@@ -125,7 +133,7 @@ contextBridge.exposeInMainWorld('las', {
    * `pcmBuffer` must be an ArrayBuffer of mono Float32 PCM samples at 16kHz
    * (see renderer/widget.js's blobToMono16kPCM). Returns
    * {ok:true, text} or {ok:false, error}. */
-  transcribeAudio: (pcmBuffer, languageHint) => ipcRenderer.invoke('audio:transcribe', pcmBuffer, languageHint),
+  transcribeAudio: (pcmBuffer, languageHint, opts) => ipcRenderer.invoke('audio:transcribe', pcmBuffer, languageHint, opts || null),
 
   /** Progress/state pushes during transcribeAudio (model download/load vs.
    * actual inference), so the mic button isn't silent during first-run
@@ -137,6 +145,14 @@ contextBridge.exposeInMainWorld('las', {
   /** This window started/stopped recording a dictation. Resolves to whether
    * any window is recording now (the app-wide mic gate, main.js). */
   setMicRecording: (name, recording) => ipcRenderer.invoke('mic:recording', name, recording),
+
+  /** A speech bubble drives this widget's dictation (main.js onBubbleAction):
+   * command 'start' (same as a click on the mic button), 'stop' (stop and
+   * send) or 'cancel' (stop, send nothing). */
+  onMicRequest: (cb) => ipcRenderer.on('mic:request', (_event, command) => cb(command || 'start')),
+  /** The phases of this widget's dictation, for the bubble that asked for
+   * it: listening / transcribing / sent {text} / failed {error} / cancelled / idle. */
+  micStatus: (name, state, detail) => ipcRenderer.send('mic:status', name, state, detail),
 
   /** The app-wide mic gate changed: `held` = some window is recording, so
    * nothing may speak. @param {(held: boolean) => void} cb */
