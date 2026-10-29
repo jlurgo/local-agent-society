@@ -100,6 +100,8 @@ las agents --inactive                   # list only inactive (put-away) agents
 las agents --active                     # list only active agents
 las widget [NAME]                       # reopen one agent's floating widget (new position, keeps color/prefs)
 las widgets                             # reopen every registered agent's widget
+las widget [NAME] --reload              # re-run one widget's face from the checkout (no rebuild, no restart)
+las widgets --reload [--force]          # same for every open widget; waits for an in-flight dictation unless --force
 las link [--agent NAME] [--tty PATH]    # link the current (or given) terminal to a widget
 ```
 `NAME` is optional on most `agent` subcommands — it defaults to the agent registered for the current directory (via `.las-agent.json` or a path match in the backend registry).
@@ -297,6 +299,25 @@ fits on one line, and if it still doesn't fit, breaks at whichever generic
 title boundary (a space, a hyphen, or a lowercase→Uppercase transition)
 falls closest to the middle — same rule in both the compact face and the
 expanded/mosaic banner, just with a much bigger target size in the latter.
+
+## Editing the widget
+
+The running app is the packaged build in `widget-electron/dist/`, but its
+face is not frozen in there: the renderer (`widget-electron/renderer/`) and
+`preload.js` are loaded from the checkout whenever the app finds one (it
+walks up from its own location to `start.sh` + `backend/main.py`). So:
+
+- **renderer / CSS / HTML / preload change** → `las widgets --reload` (or the
+  tray's *Reload widgets*, or `open 'localagentsociety://?action=reload'`).
+  Every open widget re-runs its face in place; a grown (mosaic) face and a
+  held mic are pushed back to it. A widget whose mic is recording is skipped
+  and the CLI waits for an idle mic before asking at all. The on-face message
+  log is cleared by the reload.
+- **`main.js` / `tray.js` / `lib/` change** → `npm run build` in
+  `widget-electron/`, then `./restart-widget.sh`: that is the running
+  process itself.
+
+Tests: `npm test` in `widget-electron/` (node's built-in runner).
 
 ---
 

@@ -953,6 +953,13 @@ test('reconciler: without Space info, an occlusion fight latches compact instead
   assert.ok(r.env.logs.some(([lvl, m]) => lvl === 'warn' && /staying compact/.test(m)), 'the latch is logged');
 });
 
+test('widget.log path: resolved from the checkout, never a hardcoded home directory', () => {
+  const src = stripComments(readSrc('main.js'));
+  assert.ok(!/\/Users\/[a-z]/.test(src), 'main.js must not hardcode any /Users/<name> path');
+  assert.ok(src.includes('function findCheckoutRoot('), 'the checkout is located by walking up to its markers');
+  assert.ok(src.includes("path.join(dir, 'start.sh')") && src.includes("path.join(dir, 'backend', 'main.py')"), 'markers are the repo\'s own files');
+});
+
 // ── reopen (`las widget`) forgets saved position, keeps color/prefs ────────
 // The saved-bounds restore is meant for a plain relaunch (`las start`); the
 // explicit reopen command exists to grab a widget that is stuck or hard to
@@ -982,6 +989,33 @@ test('handleProtocolUrl routes action=close to closeWidget, distinct from reopen
   const body = extractFunctionBody(src, 'function handleProtocolUrl(rawUrl) {');
   assert.match(body, /action === 'close'/);
   assert.match(body, /closeWidget\(name\)/);
+});
+
+test('handleProtocolUrl routes action=reload to reloadWidgets, with no name meaning every widget', () => {
+  const src = readSrc('main.js');
+  const body = extractFunctionBody(src, 'function handleProtocolUrl(rawUrl) {');
+  assert.match(body, /action === 'reload'/);
+  assert.match(body, /reloadWidgets\(name \|\| null\)/, 'an empty name reloads them all');
+  assert.ok(body.indexOf("action === 'reload'") < body.indexOf('if (!name) return;'), 'reload is routed BEFORE the name check, or the all-widgets form would be dropped');
+});
+
+test('reloadWidgets skips a widget whose mic is recording, closes a stale drawer, and re-pushes main-side state', () => {
+  const src = readSrc('main.js');
+  const body = extractFunctionBody(src, 'function reloadWidgets(name = null) {');
+  assert.match(body, /recordingWindows\.has\(win\.agentName\)/, 'a reload must never cut a dictation');
+  assert.match(body, /collapseDrawer\(win\)/);
+  assert.match(body, /did-finish-load/);
+  assert.match(body, /window:occlusion-state/, 'a grown face must come back grown');
+  assert.match(body, /webContents\.reload\(\)/);
+});
+
+test('the face and preload load from the checkout when there is one, else from the packaged copy', () => {
+  const src = stripComments(readSrc('main.js'));
+  assert.match(src, /preload: WIDGET_SOURCES\.preloadPath/);
+  assert.match(src, /loadFile\(path\.join\(WIDGET_SOURCES\.rendererDir, 'index\.html'\)/);
+  const body = extractFunctionBody(src, 'function resolveWidgetSources() {');
+  assert.match(body, /findCheckoutRoot\(\)/);
+  assert.match(body, /path\.join\(__dirname, 'renderer'\)/, 'the packaged copy stays the fallback');
 });
 
 test('closeWidget destroys the existing window and does NOT recreate one', () => {
