@@ -350,6 +350,8 @@ function buildWorld() {
 function agentWindowsAll() { const s = new Set(); if (world) for (const d of world.displays) for (const sp of d.spaces) for (const w of sp.windows) s.add(w.wid); return s; }
 
 function select(name) {
+  // Another agent takes the stage: the previous one's screens and mosaic go, the new mosaic opens where you look.
+  if (name !== selected) for (const sc of [...screens]) closeScreen(sc);
   mosaicAz = headYaw; mosaicEl = THREE.MathUtils.clamp(headPitch, -0.4, 0.4);
   setSelected(selected === name ? null : name);
   buildMosaic();
