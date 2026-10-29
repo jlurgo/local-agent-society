@@ -1776,12 +1776,13 @@ function getWhisperPipeline(onProgress) {
  *   from the agent's resolved TTS locale, or null to let Whisper auto-detect
  * @returns {Promise<string>}
  */
-async function transcribeAudio(win, pcmFloat32, languageHint) {
+async function transcribeAudio(win, pcmFloat32, languageHint, { live = false } = {}) {
+  const lvl = live ? 'debug' : 'info'; // a live pass every couple of seconds must not flood the log
   const send = (status) => {
     if (win && !win.isDestroyed()) win.webContents.send('audio:status', status);
   };
   const durationS = (pcmFloat32.length / 16000).toFixed(1);
-  log.info('mic', `transcribe: start samples=${pcmFloat32.length} (~${durationS}s) language=${languageHint || 'auto'}`);
+  log[lvl]('mic', `transcribe: start samples=${pcmFloat32.length} (~${durationS}s) language=${languageHint || 'auto'}`);
   const startedAt = Date.now();
   const modelAlreadyLoaded = whisperPipelinePromise !== null;
   if (!modelAlreadyLoaded) send({ state: 'loading-model' });
@@ -1816,7 +1817,7 @@ async function transcribeAudio(win, pcmFloat32, languageHint) {
     }
   }
   const text = (output && output.text ? output.text : '').trim();
-  log.info('mic', `transcribe: done in ${Date.now() - startedAt}ms, ${text.length} chars`);
+  log[lvl]('mic', `transcribe: done in ${Date.now() - startedAt}ms, ${text.length} chars`);
   return text;
 }
 
@@ -1828,11 +1829,11 @@ ipcMain.on('log:write', (_event, level, component, message) => {
   writeLog(String(level || 'INFO'), String(component || 'widget'), String(message || ''));
 });
 
-ipcMain.handle('audio:transcribe', async (event, pcmBuffer, languageHint) => {
+ipcMain.handle('audio:transcribe', async (event, pcmBuffer, languageHint, opts) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   try {
     const pcm = new Float32Array(pcmBuffer);
-    const text = await transcribeAudio(win, pcm, languageHint || null);
+    const text = await transcribeAudio(win, pcm, languageHint || null, { live: Boolean(opts && opts.live) });
     return { ok: true, text };
   } catch (err) {
     log.error('mic', `audio:transcribe IPC failed: ${err && err.stack ? err.stack : err}`);

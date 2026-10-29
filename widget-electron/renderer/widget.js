@@ -1313,6 +1313,8 @@ async function stopRecordingAndTranscribe() {
   if (!recorder) return;
 
   window.las.log('info', 'mic', 'stop clicked — flushing recorder');
+  const liveSt = stopLiveTranscription();
+  if (liveSt && liveSt.inFlight) await liveSt.inFlight.catch(() => {});   // never two Whisper runs at once
   await new Promise((resolve) => {
     if (recorder.state === 'inactive') {
       resolve();
@@ -1403,6 +1405,110 @@ async function stopRecordingAndTranscribe() {
   }
 }
 
+// ── live transcription while recording ─────────────────────────────────────
+// The bubble that asked for a dictation shows the words as they come
+// (reportMic 'partial'). A second tap on the same mic stream feeds 16 kHz
+// PCM into a buffer; every LIVE_TICK_MS (after the previous pass finished —
+// never two Whisper runs at once) the audio since the last commit point is
+// transcribed and shown as the tail; past LIVE_COMMIT_S of tail the words
+// are frozen as committed text and the window starts again, so a pass stays
+// short however long the dictation runs. The final text sent is still ONE
+// transcription of the whole recording (stopRecordingAndTranscribe) — the
+// live words are a preview, and a cut mid-word at a commit point only ever
+// touches the preview.
+const LIVE_TICK_MS = 1500;
+const LIVE_MIN_S = 1.2;
+const LIVE_COMMIT_S = 12;
+let live = null;
+
+function startLiveTranscription(stream) {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  let ctx;
+  try {
+    ctx = new AudioCtx({ sampleRate: 16000 });   // Chromium resamples the mic to the context rate
+  } catch {
+    ctx = new AudioCtx();
+  }
+  const src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const mute = ctx.createGain();
+  mute.gain.value = 0;                             // a processor only runs when wired to the output; never echo the mic
+  const st = { ctx, proc, rate: ctx.sampleRate, chunks: [], total: 0, commitOffset: 0, committed: '', tail: '', inFlight: null, timer: null, stopped: false };
+  proc.onaudioprocess = (e) => {
+    if (st.stopped) return;
+    const d = e.inputBuffer.getChannelData(0);
+    st.chunks.push(new Float32Array(d));
+    st.total += d.length;
+  };
+  src.connect(proc);
+  proc.connect(mute);
+  mute.connect(ctx.destination);
+  live = st;
+  st.timer = setTimeout(liveTick, LIVE_TICK_MS);
+}
+
+function livePcmSince(st, offset) {
+  const out = new Float32Array(Math.max(0, st.total - offset));
+  let pos = 0;
+  let skip = offset;
+  for (const c of st.chunks) {
+    if (skip >= c.length) {
+      skip -= c.length;
+      continue;
+    }
+    const part = skip ? c.subarray(skip) : c;
+    skip = 0;
+    out.set(part, pos);
+    pos += part.length;
+  }
+  return out;
+}
+
+function to16k(pcm, rate) {
+  if (rate === 16000) return pcm;
+  const ratio = rate / 16000;
+  const out = new Float32Array(Math.floor(pcm.length / ratio));
+  for (let i = 0; i < out.length; i++) out[i] = pcm[Math.floor(i * ratio)];
+  return out;
+}
+
+async function liveTick() {
+  const st = live;
+  if (!st || st.stopped) return;
+  const snapshot = st.total;
+  const newSeconds = (snapshot - st.commitOffset) / st.rate;
+  if (newSeconds >= LIVE_MIN_S) {
+    const pcm = to16k(livePcmSince(st, st.commitOffset).subarray(0, snapshot - st.commitOffset), st.rate);
+    const languageHint = prefs.micLanguage && prefs.micLanguage !== 'auto' ? prefs.micLanguage : null;
+    st.inFlight = window.las.transcribeAudio(pcm.buffer, languageHint, { live: true });
+    const res = await st.inFlight.catch(() => null);
+    st.inFlight = null;
+    if (st.stopped) return;
+    if (res && res.ok) {
+      st.tail = (res.text || '').trim();
+      reportMic('partial', { text: `${st.committed} ${st.tail}`.trim() });
+      if (newSeconds >= LIVE_COMMIT_S) {
+        st.committed = `${st.committed} ${st.tail}`.trim();
+        st.tail = '';
+        st.commitOffset = snapshot;
+      }
+    }
+  }
+  st.timer = setTimeout(liveTick, LIVE_TICK_MS);
+}
+
+/** Stops the tap; returns its state so a caller can await an in-flight pass. */
+function stopLiveTranscription() {
+  const st = live;
+  if (!st) return null;
+  st.stopped = true;
+  clearTimeout(st.timer);
+  try { st.proc.disconnect(); } catch { /* already gone */ }
+  st.ctx.close().catch(() => {});
+  live = null;
+  return st;
+}
+
 async function startRecording() {
   let stream;
   try {
@@ -1420,6 +1526,11 @@ async function startRecording() {
   mediaRecorder.start();
   setMicState('listening');
   window.las.log('info', 'mic', 'recording started');
+  try {
+    startLiveTranscription(stream);
+  } catch (err) {
+    window.las.log('warn', 'mic', `live transcription unavailable: ${err && err.message ? err.message : err}`);
+  }
   maxDurationTimer = setTimeout(() => {
     window.las.log('warn', 'mic', `max recording duration (${MAX_RECORDING_MS}ms) hit — auto-stopping`);
     stopRecordingAndTranscribe();

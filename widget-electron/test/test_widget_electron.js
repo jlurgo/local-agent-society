@@ -1069,6 +1069,11 @@ test('bubbles: the actions go to the agent — focus (Space switch), focus + mic
   assert.match(renderer, /command === 'cancel'[\s\S]*discardRecording = true/, 'cancel throws the audio away');
   assert.match(renderer, /if \(discardRecording\) \{[\s\S]*recordedChunks = \[\];[\s\S]*reportMic\('cancelled'\)/, 'a cancelled dictation transcribes and sends nothing');
   assert.match(renderer, /reportMic\('sent', \{ text: result\.text \}\)/, 'the bubble learns what was sent');
+  assert.match(renderer, /reportMic\('partial', \{ text:/, 'the words as they come');
+  assert.match(renderer, /transcribeAudio\(pcm\.buffer, languageHint, \{ live: true \}\)/);
+  assert.match(renderer, /if \(liveSt && liveSt\.inFlight\) await liveSt\.inFlight/, 'the final pass waits for a live pass: never two Whisper runs at once');
+  assert.match(readSrc('main.js'), /transcribeAudio\(win, pcm, languageHint \|\| null, \{ live: Boolean\(opts && opts\.live\) \}\)/);
+  assert.match(readSrc('bubbles.js'), /state === 'partial'/, 'a live pass holds the bubble like listening does');
   assert.match(preload, /micStatus: \(name, state, detail\) => ipcRenderer\.send\('mic:status'/);
   const bubblesSrc = readSrc('bubbles.js');
   const micStatus = extractFunctionBody(bubblesSrc, 'function micStatus(agentName, state, detail) {');

@@ -324,9 +324,11 @@ after 20 s unless the pointer is over one or a text answer is open.
 - **Click the text** → macOS switches to that agent's Space (its widget is
   focused).
 - **🎤 Voice** → the agent's widget starts a dictation where it is, unseen
-  (no Space switch), and the bubble becomes its face: a pulsing dot and the
-  elapsed time while recording, **■** stops and sends, **✕** cancels and
-  sends nothing, then "Transcribing…" and "Sent: …" (or the failure), and
+  (no Space switch), and the bubble becomes its face: a pulsing dot, the
+  elapsed time and **the words as they come** (a live Whisper pass every
+  couple of seconds over the audio since the last commit point; the text
+  sent at the end is one transcription of the whole recording), **➤** sends,
+  **🗑** discards, then "Transcribing…" and "Sent: …" (or the failure), and
   the bubble closes itself.
 - **⌨ Text** → an input in the bubble; Enter sends. The answer takes the
   exact path of a dictation (from the agent, to the agent, source human),

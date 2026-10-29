@@ -211,7 +211,7 @@ function createBubbles({ sources, log, onAction }) {
     for (const b of bubbles) {
       if (b.agentName !== agentName || !b.voice || b.closing || b.win.isDestroyed()) continue;
       b.win.webContents.send('bubble:mic', state, detail || null);
-      if (state === 'listening' || state === 'transcribing') {
+      if (state === 'listening' || state === 'partial' || state === 'transcribing') {
         b.pinned = true;
         armTimer(b);
       } else if (state === 'sent') {

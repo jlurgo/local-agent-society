@@ -117,6 +117,13 @@
     .mic .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .mic .time { font-variant-numeric: tabular-nums; opacity: 0.8; }
     .mic .circles { opacity: 1; }
+    /* The words as they come, under the dictation row: a few lines, the
+       newest always in view. */
+    .live { display: none; margin: -4px 12px 10px; padding: 6px 8px; max-height: 5.6em; overflow: auto; line-height: 1.35;
+            border-radius: 8px; background: rgba(255, 255, 255, 0.22); font-size: 13px; user-select: text; white-space: pre-wrap; word-break: break-word; }
+    .live:empty { display: none !important; }
+    body.listening .live, body.transcribing .live { display: block; }
+    body.dark .live { background: rgba(0, 0, 0, 0.22); }
     body.dark { --bubble-ink: #f4f4f4; }
     body.dark .circle { border-color: rgba(255, 255, 255, 0.6); color: #f4f4f4; background: rgba(0, 0, 0, 0.22); }
     body.dark .reply input { background: rgba(0, 0, 0, 0.35); color: #fff; }
@@ -141,10 +148,11 @@
       <span class="label" id="micLabel">Starting the mic…</span>
       <span class="time" id="micTime"></span>
       <div class="circles">
-        <button class="circle" id="micSend" title="Stop and send">■</button>
-        <button class="circle" id="micCancel" title="Cancel, send nothing">✕</button>
+        <button class="circle" id="micSend" title="Send">➤</button>
+        <button class="circle" id="micCancel" title="Discard, send nothing">🗑</button>
       </div>
     </div>
+    <div class="live" id="live"></div>
   </div>
   <script>
     const params = new URLSearchParams(location.search);
@@ -189,6 +197,7 @@
     // this bubble is the face of that dictation (bubble:mic from main).
     const micLabel = document.getElementById('micLabel');
     const micTime = document.getElementById('micTime');
+    const liveEl = document.getElementById('live');
     let micStart = 0;
     let micTick = null;
     const setMic = (state) => {
@@ -201,13 +210,17 @@
       micLabel.textContent = 'Starting the mic…';
       act('voice');
     });
-    document.getElementById('micSend').addEventListener('click', () => { micLabel.textContent = 'Stopping…'; act('mic-stop'); });
+    document.getElementById('micSend').addEventListener('click', () => { micLabel.textContent = 'Sending…'; act('mic-stop'); });
     document.getElementById('micCancel').addEventListener('click', () => act('mic-cancel')); // always closes (bubbles.js)
     window.bubble.onMic((state, detail) => {
-      if (state === 'listening') {
+      if (state === 'partial') {
+        liveEl.textContent = (detail && detail.text) || '';
+        liveEl.scrollTop = liveEl.scrollHeight;
+      } else if (state === 'listening') {
         setMic('listening');
+        liveEl.textContent = '';
         micStart = Date.now();
-        micLabel.textContent = 'Recording — ■ to send';
+        micLabel.textContent = 'Listening…';
         clearInterval(micTick);
         micTick = setInterval(() => { micTime.textContent = fmt(Date.now() - micStart); }, 500);
         micTime.textContent = '0:00';

@@ -133,7 +133,7 @@ contextBridge.exposeInMainWorld('las', {
    * `pcmBuffer` must be an ArrayBuffer of mono Float32 PCM samples at 16kHz
    * (see renderer/widget.js's blobToMono16kPCM). Returns
    * {ok:true, text} or {ok:false, error}. */
-  transcribeAudio: (pcmBuffer, languageHint) => ipcRenderer.invoke('audio:transcribe', pcmBuffer, languageHint),
+  transcribeAudio: (pcmBuffer, languageHint, opts) => ipcRenderer.invoke('audio:transcribe', pcmBuffer, languageHint, opts || null),
 
   /** Progress/state pushes during transcribeAudio (model download/load vs.
    * actual inference), so the mic button isn't silent during first-run
