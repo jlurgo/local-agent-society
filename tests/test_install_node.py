@@ -41,3 +41,10 @@ def test_node_ok_rejects_20_and_accepts_22_12(tmp_path):
         node = _fake_node(d, version)
         r = subprocess.run(["bash", "-c", f"{block}\nnode_ok {node}"])
         assert r.returncode == ok, version
+
+
+def test_installer_never_makes_the_checkout_an_agent():
+    """The checkout is a tool on most machines: on uy-mac install.sh wrote a
+    .las-agent.json named System into it, a second "System" beside the real one.
+    An agent is created on purpose, with `las agent new`, never by installing."""
+    assert ".las-agent.json" not in INSTALL.read_text()

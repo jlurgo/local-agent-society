@@ -1,12 +1,9 @@
 #!/bin/bash
 # Local Agent Society — installer
-# Usage: ./install.sh [AgentName]
-# Default agent name: System
+# Usage: ./install.sh
 set -e
 
 INSTALL_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-FAMILY="${1:-LocalAgentSociety}"
-
 # ── 0. Node >= 22.12 ──────────────────────────────────────────────────────────
 # Everything below runs node: the widget build (@electron/rebuild and node-abi
 # need >=22.12), the bridge, and vortexia, whose launchd plist pins whichever
@@ -29,7 +26,6 @@ export PATH="$( dirname "$NODE_BIN" ):$PATH"
 
 echo "Local Agent Society — installing"
 echo "  Directory : $INSTALL_DIR"
-echo "  Agent     : $FAMILY"
 echo "  Node      : $NODE_BIN ($("$NODE_BIN" --version))"
 echo ""
 
@@ -258,24 +254,6 @@ if [ -d "$VORTEXIA_DIR" ]; then
     fi
 else
     echo "         ⚠️  could not obtain vortexia at $VORTEXIA_DIR — inter-agent messaging (las agent inject/send, TTS queue) will not work until this is resolved."
-fi
-
-# ── Create .las-agent.json if not present ─────────────────────────────────────
-if [ ! -f "$INSTALL_DIR/.las-agent.json" ]; then
-    TODAY=$(date '+%Y-%m-%d')
-    cat > "$INSTALL_DIR/.las-agent.json" <<JSON
-{
-  "name": "$FAMILY",
-  "voice": "Samantha",
-  "pronunciation": "$FAMILY",
-  "backend_url": "http://localhost:8700",
-  "frontend_url": "http://localhost:8700/widget/$FAMILY",
-  "created": "$TODAY",
-  "response_length_hint": 40,
-  "short_description": "",
-  "long_description": ""
-}
-JSON
 fi
 
 # ── Install `las` CLI ─────────────────────────────────────────────────────────
