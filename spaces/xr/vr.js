@@ -29,7 +29,7 @@ const post = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 
 // ── layout (meters / radians) — everything on spheres around your head ─────
 const EYE_Y = 1.25;
 const CLOUD = { r: 1.9, step: 0.2, follow: 0.06, bubbleR: 0.21, margin: 0.05, attract: 14, damp: 5.5, repel: 9, gap: 1.06 };   // sunflower of bubbles: follows the gaze, flows around what is in the middle
-const MOSAIC = { r: 1.85, browserW: 0.72, termW: 0.46, gap: 0.05, perRowB: 3, perRowT: 4 };   // a centered grid: browser tabs big on top, terminals smaller below
+const MOSAIC = { r: 1.85, cols: 3, colW: 0.62, browserScale: 1.25, gap: 0.05 };   // masonry: 3 columns, each tile into the shortest column; browser tiles taller
 const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045;
 let mosaicExtent = { hAz: 0, hEl: 0, top: 0 };
 const THUMB_W = 400, LIVE_W = 1100, SCREEN_W = 1500, SCREEN_W_HI = 2400, SCREEN_WIDTH_M = 1.7, SCREEN_DIST = 1.4, MAX_SCREENS = 3;
@@ -146,7 +146,7 @@ function unhover(o) { const i = hoverables.indexOf(o); if (i !== -1) hoverables.
 const termTex = new Map();
 function drawTerminal(wid, { rows, cols, text }) {
   rows = Math.max(1, rows || 24); cols = Math.max(1, cols || 80);
-  const charW = Math.min(9, Math.floor(2048 / cols)), fontPx = Math.round(charW / 0.6), lineH = Math.round(fontPx * 1.22);
+  const charW = Math.min(12, Math.floor(4096 / cols)), fontPx = Math.round(charW / 0.6), lineH = Math.round(fontPx * 1.2);   // up to 12 px per column: readable on a tile, crisp on a screen
   const W = cols * charW, H = rows * lineH;
   let t = termTex.get(wid);
   if (!t || t.canvas.width !== W || t.canvas.height !== H) {
@@ -161,7 +161,7 @@ function drawTerminal(wid, { rows, cols, text }) {
   }
   const g = t.canvas.getContext('2d');
   g.fillStyle = '#0e0e12'; g.fillRect(0, 0, W, H);
-  g.fillStyle = '#dcdcdc'; g.font = `${fontPx}px Menlo, Monaco, "DejaVu Sans Mono", monospace`; g.textBaseline = 'top';
+  g.fillStyle = '#f4f4f4'; g.font = `500 ${fontPx}px Menlo, Monaco, "DejaVu Sans Mono", monospace`; g.textBaseline = 'top';
   const lines = text.split('\n');
   for (let i = 0; i < Math.min(rows, lines.length); i++) g.fillText(lines[i], 2, i * lineH + 2);
   t.tex.needsUpdate = true;
@@ -173,7 +173,6 @@ function applyTexture(mesh, tex, aspect, width = null) {
     mesh.geometry.dispose(); mesh.geometry = new THREE.PlaneGeometry(width, h);
     if (mesh.children[0]) { mesh.children[0].geometry.dispose(); mesh.children[0].geometry = new THREE.PlaneGeometry(width + 0.04, h + 0.04); }
     if (mesh.children[1]) mesh.children[1].position.y = h / 2 + 0.05;
-    if (mesh.children[2]) mesh.children[2].position.y = h / 2 + 0.05 + 0.035 + 0.05 + 0.02;
   }
 }
 
@@ -230,7 +229,8 @@ function obstacles() {
     list.push({ az: a.az, el: a.el, hAz: Math.atan((g.width * sc.mesh.scale.x * k / 2) / a.d) + CLOUD.margin, hEl: Math.atan((g.height * sc.mesh.scale.y * k / 2) / a.d) + CLOUD.margin });
   }
   if (keyboard && activeScreen) { const a = angOf(keyboard.group); list.push({ az: a.az, el: a.el - 0.08, hAz: Math.atan(0.6 * root.scale.x / a.d) + CLOUD.margin, hEl: Math.atan(0.22 * root.scale.x / a.d) + CLOUD.margin }); }
-  if (panels.length) { const c = mosaicCenter(); list.push({ az: c.az, el: c.el + 0.03, hAz: mosaicExtent.hAz, hEl: mosaicExtent.hEl + 0.08 }); }
+  if (panels.length) { const c = mosaicCenter(); list.push({ az: c.az, el: c.el + 0.06, hAz: mosaicExtent.hAz, hEl: mosaicExtent.hEl + 0.12 }); }   // includes the title above
+  if (stageTitle && screens.length) { const b = screenBox({ mesh: stageTitle }); list.push({ az: b.az, el: b.el, hAz: b.hAz + CLOUD.margin, hEl: b.hEl + CLOUD.margin }); }
   return list;
 }
 /** Push a direction out of every obstacle box it falls in, to the box's rim along the line from the box center. */
@@ -285,24 +285,20 @@ function clearPanels() {
   for (const p of panels) { root.remove(p.mesh); root.remove(p.label); disposeObject(p.mesh); disposeObject(p.label); unhover(p.mesh); }
   panels.length = 0;
 }
-/** Grid offsets (meters, around the mosaic center): browser rows on top, terminal rows below, each row centered. */
+/** Masonry offsets (meters, around the mosaic center): columns of equal width, each tile dropped into the shortest column. */
 function layoutMosaic() {
-  const bs = panels.filter((p) => p.kind === 'browser'), ts = panels.filter((p) => p.kind !== 'browser');
-  const rows = [];
-  for (let i = 0; i < bs.length; i += MOSAIC.perRowB) rows.push(bs.slice(i, i + MOSAIC.perRowB));
-  for (let i = 0; i < ts.length; i += MOSAIC.perRowT) rows.push(ts.slice(i, i + MOSAIC.perRowT));
-  const sizeOf = (p) => { const g = p.mesh.geometry.parameters; return { w: g.width, h: g.height + LABEL_H + 0.01 }; };
-  const rowH = rows.map((r) => Math.max(...r.map((p) => sizeOf(p).h)));
-  const total = rowH.reduce((a, h) => a + h, 0) + MOSAIC.gap * (rows.length - 1);
-  let y = total / 2, maxW = 0;
-  rows.forEach((row, ri) => {
-    const widths = row.map((p) => sizeOf(p).w), rowW = widths.reduce((a, w) => a + w, 0) + MOSAIC.gap * (row.length - 1);
-    maxW = Math.max(maxW, rowW);
-    let x = -rowW / 2;
-    row.forEach((p, i) => { const { w, h } = sizeOf(p); p.off = { x: x + w / 2, y: y - rowH[ri] / 2, h: p.mesh.geometry.parameters.height }; x += w + MOSAIC.gap; });
-    y -= rowH[ri] + MOSAIC.gap;
-  });
-  mosaicExtent = { hAz: maxW / 2 / MOSAIC.r + 0.06, hEl: total / 2 / MOSAIC.r + 0.06, top: total / 2 };
+  const cols = Math.min(MOSAIC.cols, Math.max(1, panels.length));
+  const heights = new Array(cols).fill(0);
+  const order = [...panels.filter((p) => p.kind === 'browser'), ...panels.filter((p) => p.kind !== 'browser')];
+  for (const p of order) {
+    const g = p.mesh.geometry.parameters, h = g.height + LABEL_H + 0.01;
+    let c = 0; for (let i = 1; i < cols; i++) if (heights[i] < heights[c] - 1e-6) c = i;
+    p.off = { x: (c - (cols - 1) / 2) * (MOSAIC.colW + MOSAIC.gap), y: -(heights[c] + g.height / 2), h: g.height };
+    heights[c] += h + MOSAIC.gap;
+  }
+  const total = Math.max(...heights) - MOSAIC.gap;
+  for (const p of panels) p.off.y += total / 2;   // center the whole wall vertically
+  mosaicExtent = { hAz: (cols * MOSAIC.colW + (cols - 1) * MOSAIC.gap) / 2 / MOSAIC.r + 0.06, hEl: total / 2 / MOSAIC.r + 0.06, top: total / 2 };
 }
 function placePanel(p) {
   if (!p.off) return;
@@ -317,9 +313,9 @@ function buildMosaic() {
   if (!f) return;
   const wins = agentWindows(f.agent);
   wins.forEach((win, i) => {
-    const w = win.kind === 'browser' ? MOSAIC.browserW : MOSAIC.termW;
+    const w = MOSAIC.colW;
     const tt = win.kind === 'terminal' ? termTex.get(win.wid) : null;
-    const h = tt ? w / tt.aspect : w * 9 / 16;
+    const h = tt ? w / tt.aspect : win.kind === 'browser' ? w * 9 / 16 * MOSAIC.browserScale : w * 9 / 16;
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: 0x000000 }));
     mesh.userData = { action: 'window', wid: win.wid, label: win.title || win.app, kind: win.kind };
     const labelText = win.session ? `${win.session.runtime} — ${win.title}` : (win.title || win.app);
@@ -327,6 +323,7 @@ function buildMosaic() {
     root.add(mesh); root.add(label); hoverables.push(mesh);
     const p = { mesh, label, wid: win.wid, kind: win.kind, w, loading: false, at: 0, index: i, count: wins.length };
     if (tt) applyTexture(mesh, tt.tex, tt.aspect);
+    if (screens.some((sc) => sc.wid === win.wid)) { mesh.visible = false; label.visible = false; }
     panels.push(p);
   });
   layoutMosaic();
@@ -345,6 +342,7 @@ function buildWorld() {
   setSelected(selected);
   buildMosaic();
   for (const sc of [...screens]) if (!agentWindowsAll().has(sc.wid)) closeScreen(sc);
+  updateStageTitle();
   hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · bubble: select · tile: open a screen · grip moves a screen / the keyboard / everything, both grips resize it · trigger clicks, stick scrolls · nothing: collapse · A/B: close screen`;
 }
 function agentWindowsAll() { const s = new Set(); if (world) for (const d of world.displays) for (const sp of d.spaces) for (const w of sp.windows) s.add(w.wid); return s; }
@@ -389,27 +387,80 @@ function openScreen(panel, label) {
   const title = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH_M, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(label, { width: 1536, height: 64, font: '34px -apple-system, system-ui, sans-serif', fg: '#fff' }), transparent: true }));
   title.position.y = SCREEN_WIDTH_M * 9 / 32 + 0.05; mesh.add(title);
   const agentName = selected || '', color = (selected && flowers.get(selected) && flowers.get(selected).color) || '#3a3a44';
-  const bar = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH_M, 0.1), new THREE.MeshBasicMaterial({ map: textTexture(agentName, { width: 1536, height: 96, bg: color, fg: ink(color), font: 'bold 60px -apple-system, system-ui, sans-serif', align: 'center' }) }));
-  bar.position.y = title.position.y + 0.035 + 0.05 + 0.02; mesh.add(bar);
   const handles = [];
   root.add(mesh); hoverables.push(mesh);
   const sc = { wid: panel.wid, mesh, handles, kind: panel.kind, loading: false, at: 0, aspectSet: false, focused: false, agent: agentName, color };
   screens.push(sc); activeScreen = sc;
   const mem = screenMemory.get(`${agentName}:${panel.wid}`);
   if (mem) { mesh.position.fromArray(mem.p); mesh.scale.setScalar(mem.s || 1); mesh.lookAt(viewerWorld); }
-  else place(mesh, headYaw + (screens.length - 1) * 0.5 - (screens.length - 1) * 0.25, headPitch * 0.5, SCREEN_DIST);   // where you look, aside of ones already open
+  else placeScreenFree(sc);   // where you look, in the first spot that does not overlap another screen
+  panel.mesh.visible = false; panel.label.visible = false;   // the tile is on the stage now
+  updateStageTitle();
   const tt = panel.kind === 'terminal' ? termTex.get(panel.wid) : null;
   if (tt) { applyTexture(mesh, tt.tex, tt.aspect, SCREEN_WIDTH_M); sc.aspectSet = true; }
   if (!keyboard) buildKeyboard();
 }
 function closeScreen(sc) {
   const i = screens.indexOf(sc); if (i !== -1) screens.splice(i, 1);
+  for (const p of panels) if (p.wid === sc.wid) { p.mesh.visible = true; p.label.visible = true; }
+  updateStageTitle();
   root.remove(sc.mesh);
   for (const o of [sc.mesh, ...sc.handles]) unhover(o);
   disposeObject(sc.mesh);
   if (hovered === sc.mesh) setHovered(null);
   if (activeScreen === sc) activeScreen = screens[screens.length - 1] || null;
   if (!screens.length) destroyKeyboard();
+}
+/** A screen's angular box around the viewer (center and half extents, radians) and its distance. */
+function screenBox(sc) {
+  const g = sc.mesh.geometry.parameters, tmp = new THREE.Vector3();
+  sc.mesh.getWorldPosition(tmp); tmp.sub(viewerWorld);
+  const d = tmp.length() || 1, k = root.scale.x;
+  return { az: Math.atan2(tmp.x, -tmp.z), el: Math.asin(THREE.MathUtils.clamp(tmp.y / d, -1, 1)), d, hAz: Math.atan((g.width * sc.mesh.scale.x * k / 2) / d), hEl: Math.atan((g.height * sc.mesh.scale.y * k / 2) / d) };
+}
+const overlaps = (a, b, m = 0.03) => { let dAz = a.az - b.az; dAz = Math.atan2(Math.sin(dAz), Math.cos(dAz)); return Math.abs(dAz) < a.hAz + b.hAz + m && Math.abs(a.el - b.el) < a.hEl + b.hEl + m; };
+/** First free spot for a new screen: where you look, then stepping right/left/down. */
+function placeScreenFree(sc) {
+  const others = screens.filter((o) => o !== sc).map(screenBox);
+  const g = sc.mesh.geometry.parameters, hAz = Math.atan((g.width / 2) / SCREEN_DIST), hEl = Math.atan((g.height / 2) / SCREEN_DIST);
+  const steps = [[0, 0], [1, 0], [-1, 0], [2, 0], [-2, 0], [0, -1], [1, -1], [-1, -1], [0, 1], [1, 1], [-1, 1]];
+  for (const [i, j] of steps) {
+    const az = headYaw + i * (2 * hAz + 0.08), el = headPitch * 0.5 + j * (2 * hEl + 0.1);
+    const box = { az, el, hAz, hEl };
+    if (!others.some((o) => overlaps(box, o))) { place(sc.mesh, az, el, SCREEN_DIST); return; }
+  }
+  place(sc.mesh, headYaw, headPitch * 0.5, SCREEN_DIST);
+}
+/** Screens never overlap: while one is moved or scaled, the others are nudged out of its way (and remembered there). */
+function separateScreens() {
+  const held = new Set([...grabs.values()].filter((g) => g.kind === 'screen').map((g) => g.screen));
+  for (let pass = 0; pass < 2; pass++) for (const a of screens) for (const b of screens) {
+    if (a === b || held.has(b) || !held.has(a) && !held.has(b) && pass === 0) continue;
+    const A = screenBox(a), B = screenBox(b);
+    if (!overlaps(A, B)) continue;
+    let dAz = B.az - A.az; dAz = Math.atan2(Math.sin(dAz), Math.cos(dAz));
+    const dEl = B.el - A.el;
+    const ovAz = A.hAz + B.hAz + 0.03 - Math.abs(dAz), ovEl = A.hEl + B.hEl + 0.03 - Math.abs(dEl);
+    const az = ovAz < ovEl ? B.az + Math.sign(dAz || 1) * ovAz : B.az, el = ovAz < ovEl ? B.el : B.el + Math.sign(dEl || 1) * ovEl;
+    place(b.mesh, az, el, B.d * root.scale.x);
+    rememberScreen(b);
+  }
+}
+// One title for the stage: the agent's name, above whatever screens are open.
+let stageTitle = null;
+function updateStageTitle() {
+  if (stageTitle) { root.remove(stageTitle); disposeObject(stageTitle); stageTitle = null; }
+  if (!screens.length) return;
+  const f = flowers.get(screens[0].agent) || (selected && flowers.get(selected));
+  const name = screens[0].agent || selected || '', color = (f && f.color) || '#3a3a44';
+  stageTitle = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.13), new THREE.MeshBasicMaterial({ map: textTexture(name, { width: 1024, height: 134, bg: color, fg: ink(color), font: 'bold 72px -apple-system, system-ui, sans-serif', align: 'center' }) }));
+  root.add(stageTitle);
+}
+function placeStageTitle() {
+  if (!stageTitle || !screens.length) return;
+  const boxes = screens.map(screenBox);
+  const top = Math.max(...boxes.map((b) => b.el + b.hEl)), az = boxes.reduce((a, b) => a + b.az, 0) / boxes.length;
+  place(stageTitle, az, top + 0.09, Math.min(...boxes.map((b) => b.d)) * root.scale.x);
 }
 async function ensureFocused(sc) {
   if (!sc || sc.focused) return Boolean(sc);
@@ -698,6 +749,8 @@ renderer.setAnimationLoop(() => {
   gazeAz += d * CLOUD.follow;
   gazeEl += (THREE.MathUtils.clamp(headPitch, -0.7, 0.7) - gazeEl) * CLOUD.follow;
   updateGrabs();
+  if (grabs.size) separateScreens();
+  placeStageTitle();
   layoutCloud();
   placeMosaic();
   placeKeyboard();
