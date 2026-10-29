@@ -1335,8 +1335,20 @@ async function sendHumanMessage(fromName, toName, text) {
 // bubble's buttons come back here as actions: go there, answer by voice
 // (go there and start a dictation), answer by text (same delivery as a
 // dictation).
+//
+// WHEN: together with the voice, not with the envelope. Synthesis happens
+// after the envelope arrives (and on a loaded machine can take a minute or
+// more), and the backend's speaker lock serializes agents — so an envelope
+// is only REMEMBERED here, and the bubble is shown by the widget's own
+// speak ack (queue:ack below): at 'playing' (the clip is starting right
+// now), or at 'skipped (muted)' (a muted agent still "says" it, silently).
+// Any other end of the turn drops it. An envelope without an id (a
+// pre-handshake publisher) can't be acked, so it bubbles at once.
 let bubbles = null;
 const seenSpeakIds = new Set();
+/** @type {Map<string, {name: string, text: string, at: number}>} */
+const pendingBubbles = new Map();
+const PENDING_BUBBLE_MAX_AGE_MS = 15 * 60 * 1000;
 
 function maybeBubble(name, win, envelope) {
   if (!bubbles || !envelope || envelope.kind !== 'speak') return;
@@ -1349,7 +1361,28 @@ function maybeBubble(name, win, envelope) {
   if (seenSpeakIds.has(id)) return;                   // a reconnect can redeliver
   seenSpeakIds.add(id);
   if (seenSpeakIds.size > 500) seenSpeakIds.delete(seenSpeakIds.values().next().value);
+  if (!envelope.id) {
+    showBubble(name, text);
+    return;
+  }
+  const now = Date.now();
+  for (const [k, p] of pendingBubbles) if (now - p.at > PENDING_BUBBLE_MAX_AGE_MS) pendingBubbles.delete(k);
+  pendingBubbles.set(envelope.id, { name, text, at: now });
+}
 
+/** The widget acked its speak turn (queue:ack): show, or forget, its bubble. */
+function bubbleOnSpeakAck(id, phase, reason, refused) {
+  const p = pendingBubbles.get(id);
+  if (!p) return;
+  const show = !refused && (phase === 'playing' || (phase === 'skipped' && reason === 'muted'));
+  if (show || refused || phase === 'done' || phase === 'skipped') pendingBubbles.delete(id);
+  if (show) showBubble(p.name, p.text);
+}
+
+function showBubble(name, text) {
+  const win = windows.get(name);
+  if (!bubbles || !win || win.isDestroyed()) return;
+  const prefs = getPrefs(name);
   let side;
   const order = spaces.getSpaceOrderForWindow(win);
   if (order) {
@@ -1873,9 +1906,11 @@ ipcMain.handle('queue:ack', async (_event, id, phase, reason, durationMs) => {
     } else {
       log.info('tts', `${tag} ${phase}${reason ? ` (${reason})` : ''}`);
     }
+    bubbleOnSpeakAck(id, phase, reason, res.ok && json.known === false && phase === 'playing');
     return { ok: res.ok, ...json };
   } catch (err) {
     log.warn('tts', `${tag} ack ${phase} failed: ${err && err.message ? err.message : err}`);
+    bubbleOnSpeakAck(id, phase, reason, false); // the widget plays anyway when the lock is unreachable
     return { ok: false, error: String(err) };
   }
 });

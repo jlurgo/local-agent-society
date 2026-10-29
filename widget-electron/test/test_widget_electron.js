@@ -1023,10 +1023,32 @@ test('bubbles: a speak envelope bubbles only when the agent is off the Space bei
   const body = extractFunctionBody(src, 'function maybeBubble(name, win, envelope) {');
   assert.match(body, /envelope\.kind !== 'speak'\) return/, 'only what the agent says out loud');
   assert.match(body, /prefs\.speechBubbles === false\) return/, 'per-agent opt-out');
-  assert.match(body, /spaces\.getSpaceOrderForWindow\(win\)/);
-  assert.match(body, /order\.index === order\.currentIndex\) return/, 'on the current Space the face shows it: no bubble');
-  assert.match(body, /order\.index < order\.currentIndex \? 'left' : 'right'/);
   assert.match(body, /seenSpeakIds/, 'a redelivered envelope never bubbles twice');
+  assert.match(body, /pendingBubbles\.set\(envelope\.id/, 'an envelope is remembered, not shown: the bubble comes with the voice');
+  const show = extractFunctionBody(src, 'function showBubble(name, text) {');
+  assert.match(show, /spaces\.getSpaceOrderForWindow\(win\)/);
+  assert.match(show, /order\.index === order\.currentIndex\) return/, 'on the current Space the face shows it: no bubble');
+  assert.match(show, /order\.index < order\.currentIndex \? 'left' : 'right'/);
+});
+
+test('bubbles: shown by the speak ack — at playing, or at skipped (muted); dropped on any other end of the turn', () => {
+  const src = readSrc('main.js');
+  const body = extractFunctionBody(src, 'function bubbleOnSpeakAck(id, phase, reason, refused) {');
+  const fn = new Function('pendingBubbles', 'showBubble', `function bubbleOnSpeakAck(id, phase, reason, refused) ${body} return bubbleOnSpeakAck;`);
+  const run = (phase, reason, refused) => {
+    const shown = [];
+    const pending = new Map([['s1', { name: 'A', text: 'hi', at: 0 }]]);
+    fn(pending, (n, t) => shown.push([n, t]))('s1', phase, reason, refused);
+    return { shown, left: pending.size };
+  };
+  assert.deepEqual(run('playing', null, false), { shown: [['A', 'hi']], left: 0 });
+  assert.deepEqual(run('skipped', 'muted', false), { shown: [['A', 'hi']], left: 0 }, 'a muted agent still says it, silently');
+  assert.deepEqual(run('started', null, false), { shown: [], left: 1 }, 'started is not yet the voice');
+  assert.deepEqual(run('playing', null, true), { shown: [], left: 0 }, 'refused by the speaker lock: no voice, no bubble');
+  assert.deepEqual(run('skipped', 'playback-error', false), { shown: [], left: 0 });
+  assert.deepEqual(run('done', null, false), { shown: [], left: 0 });
+  const ack = extractFunctionBody(src, "ipcMain.handle('queue:ack', async (_event, id, phase, reason, durationMs) => {");
+  assert.match(ack, /bubbleOnSpeakAck\(id, phase, reason/, 'the ack handler drives the bubbles');
 });
 
 test('bubbles: the actions go to the agent — focus (Space switch), focus + mic, or the same human-message send as a dictation', () => {

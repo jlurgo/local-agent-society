@@ -44,20 +44,43 @@
     @keyframes slide-in { from { transform: translateX(120%); opacity: 0; } to { transform: none; opacity: 1; } }
     @keyframes slide-in-left { from { transform: translateX(-120%); opacity: 0; } to { transform: none; opacity: 1; } }
 
+    /* Minimal at rest: the name and the words. The round buttons — the
+       same circles as the widget's face buttons — only appear while the
+       pointer is over the bubble, top-right over the name row. */
     .head {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 8px 10px 0 12px;
+      padding: 8px 12px 0 12px;
+      min-height: 26px;
     }
     .name { font-weight: 700; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .dismiss {
-      border: 0; background: transparent; color: inherit; opacity: 0.6; cursor: pointer;
-      font-size: 15px; line-height: 1; padding: 4px 6px; border-radius: 8px;
+    .circles {
+      display: flex;
+      gap: 6px;
+      opacity: 0;
+      transition: opacity 140ms ease-out;
     }
-    .dismiss:hover { opacity: 1; background: rgba(0, 0, 0, 0.12); }
+    .card:hover .circles, body.replying .circles { opacity: 1; }
+    .circle {
+      width: 26px;
+      height: 26px;
+      box-sizing: border-box;
+      border: 2.4px solid rgba(20, 20, 20, 0.55);
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.28);
+      color: #141414;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+    .circle:hover { background: rgba(255, 255, 255, 0.6); }
     .body {
-      padding: 6px 12px 8px;
+      padding: 4px 12px 10px;
       line-height: 1.35;
       max-height: 170px;
       overflow: auto;
@@ -66,37 +89,21 @@
       word-break: break-word;
     }
     .body:hover { background: rgba(255, 255, 255, 0.18); border-radius: 8px; }
-    .actions { display: flex; gap: 6px; padding: 0 10px 10px; }
-    .actions button {
-      flex: 1;
-      border: 1px solid rgba(0, 0, 0, 0.22);
-      background: rgba(255, 255, 255, 0.35);
-      color: inherit;
-      border-radius: 9px;
-      padding: 5px 8px;
-      font: inherit;
-      cursor: pointer;
-    }
-    .actions button:hover { background: rgba(255, 255, 255, 0.6); }
     .reply { display: none; gap: 6px; padding: 0 10px 10px; }
     body.replying .reply { display: flex; }
-    body.replying .actions { display: none; }
     .reply input {
       flex: 1;
       min-width: 0;
       font: inherit;
       padding: 6px 8px;
-      border-radius: 9px;
+      border-radius: 13px;
       border: 1px solid rgba(0, 0, 0, 0.22);
       background: rgba(255, 255, 255, 0.85);
       color: #111;
       user-select: text;
     }
-    .reply button {
-      border: 1px solid rgba(0, 0, 0, 0.22); background: rgba(255, 255, 255, 0.35); color: inherit;
-      border-radius: 9px; padding: 5px 10px; font: inherit; cursor: pointer;
-    }
     body.dark { --bubble-ink: #f4f4f4; }
+    body.dark .circle { border-color: rgba(255, 255, 255, 0.6); color: #f4f4f4; background: rgba(0, 0, 0, 0.22); }
     body.dark .reply input { background: rgba(0, 0, 0, 0.35); color: #fff; }
   </style>
 </head>
@@ -104,16 +111,15 @@
   <div class="card" id="card">
     <div class="head">
       <span class="name" id="name"></span>
-      <button class="dismiss" id="dismiss" title="Dismiss (Esc)">✕</button>
+      <div class="circles">
+        <button class="circle" id="voice" title="Answer by voice: go to the agent and start a dictation">🎤</button>
+        <button class="circle" id="textBtn" title="Answer by text, right here">⌨</button>
+        <button class="circle" id="dismiss" title="Dismiss (Esc)">✕</button>
+      </div>
     </div>
     <div class="body" id="text" title="Go to this agent"></div>
-    <div class="actions">
-      <button id="voice" title="Go to the agent and start a dictation">🎤 Voice</button>
-      <button id="textBtn" title="Type an answer here">⌨ Text</button>
-    </div>
     <div class="reply">
-      <input id="input" type="text" placeholder="Answer…" autocomplete="off" spellcheck="false" />
-      <button id="send">Send</button>
+      <input id="input" type="text" placeholder="Answer… (Enter sends)" autocomplete="off" spellcheck="false" />
     </div>
   </div>
   <script>
@@ -167,7 +173,6 @@
       if (!value) return;
       act('reply', { text: value });
     };
-    document.getElementById('send').addEventListener('click', send);
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') send();
       if (e.key === 'Escape') act('dismiss');
