@@ -96,6 +96,9 @@ function createBubbles({ sources, log, onAction }) {
   }
 
   function armTimer(b) {
+    // A bubble on its way out keeps its close timer: a hover (pin) after
+    // 'sent' must not cancel it — that left a bubble nobody could dismiss.
+    if (b.closing) return;
     clearTimeout(b.timer);
     if (b.pinned) return;
     b.timer = setTimeout(() => close(b), BUBBLE_TTL_MS);
@@ -180,8 +183,13 @@ function createBubbles({ sources, log, onAction }) {
         onAction(kind, b.agentName, payload);
         return;
       case 'mic-stop':
-      case 'mic-cancel':
         onAction(kind, b.agentName, payload);
+        return;
+      case 'mic-cancel':
+        // The row's ✕ always gets the user out: cancel whatever the widget
+        // is doing for this bubble, and close.
+        onAction(kind, b.agentName, payload);
+        close(b);
         return;
       case 'open':
       case 'reply':
@@ -211,6 +219,8 @@ function createBubbles({ sources, log, onAction }) {
         clearTimeout(b.timer);
         b.timer = setTimeout(() => close(b), 1500);
       } else if (state === 'failed' || state === 'cancelled') {
+        // The widget is not recording for this bubble (any more): back to a
+        // plain bubble that fades on its own.
         b.voice = false;
         b.pinned = false;
         armTimer(b);

@@ -1074,6 +1074,10 @@ test('bubbles: the actions go to the agent — focus (Space switch), focus + mic
   const micStatus = extractFunctionBody(bubblesSrc, 'function micStatus(agentName, state, detail) {');
   assert.match(micStatus, /!b\.voice/, 'only the bubble that asked shows the dictation');
   assert.match(micStatus, /state === 'sent'[\s\S]*close\(b\)/, 'closes itself once sent');
+  const arm = extractFunctionBody(bubblesSrc, 'function armTimer(b) {');
+  assert.match(arm, /^\s*\{?\s*(\/\/[^\n]*\n\s*)*if \(b\.closing\) return;/, 'a hover after sent must not cancel the pending close (left a bubble nobody could dismiss)');
+  assert.match(bubblesSrc, /case 'mic-cancel':[\s\S]*?close\(b\);\s*return;/, "the row's ✕ always closes the bubble, recording or not");
+  assert.match(renderer, /reportMic\('failed', \{ error: `mic busy/, 'a refused start is visible in the bubble');
   assert.ok(fs.existsSync(path.join(ROOT, 'renderer', 'bubble.html')) && fs.existsSync(path.join(ROOT, 'bubble-preload.js')));
   const bubbles = readSrc('bubbles.js');
   assert.match(bubbles, /showInactive\(\)/, 'a bubble never steals focus when it appears');

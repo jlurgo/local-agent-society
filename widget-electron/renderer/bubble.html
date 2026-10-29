@@ -202,7 +202,7 @@
       act('voice');
     });
     document.getElementById('micSend').addEventListener('click', () => { micLabel.textContent = 'Stopping…'; act('mic-stop'); });
-    document.getElementById('micCancel').addEventListener('click', () => act('mic-cancel'));
+    document.getElementById('micCancel').addEventListener('click', () => act('mic-cancel')); // always closes (bubbles.js)
     window.bubble.onMic((state, detail) => {
       if (state === 'listening') {
         setMic('listening');

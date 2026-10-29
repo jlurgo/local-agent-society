@@ -1461,6 +1461,8 @@ window.las.onMicRequest((command) => {
     }
   } else if (micState === 'idle') {
     startRecording();
+  } else {
+    reportMic('failed', { error: `mic busy (${micState})` });
   }
 });
 micEl.addEventListener('dblclick', () => {
