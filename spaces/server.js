@@ -104,22 +104,22 @@ function pump() {
   while (inFlight < CAPTURE_CONCURRENCY && waiting.length) {
     const job = waiting.shift();
     inFlight++;
-    mac.captureWindow(job.wid, { maxWidth: job.w })
+    mac.captureWindow(job.wid, { maxWidth: job.w, hi: job.hi })
       .then(job.resolve, (err) => { warn('thumb', `${job.wid}: ${err && err.message ? err.message : err}`); job.resolve(null); })
       .finally(() => { inFlight--; pump(); });
   }
 }
-function capture(wid, w) {
+function capture(wid, w, hi = false) {
   if (waiting.length >= CAPTURE_QUEUE_MAX) return Promise.resolve(null);
-  return new Promise((resolve) => { waiting.push({ wid, w, resolve }); pump(); });
+  return new Promise((resolve) => { waiting.push({ wid, w, hi, resolve }); pump(); });
 }
 const thumbs = new Map();   // key → { at, promise }
-function thumb(wid, w, live = false) {
-  const key = `${wid}:${w}`;
+function thumb(wid, w, live = false, hi = false) {
+  const key = `${wid}:${w}:${hi ? 'hi' : 'lo'}`;
   const c = thumbs.get(key);
   const now = Date.now();
   if (c && now - c.at < (live ? LIVE_TTL_MS : THUMB_TTL_MS)) return c.promise;
-  const promise = capture(wid, w);
+  const promise = capture(wid, w, hi);
   thumbs.set(key, { at: now, promise });
   if (thumbs.size > 400) thumbs.delete(thumbs.keys().next().value);
   return promise;
@@ -262,8 +262,8 @@ const server = http.createServer(async (req, res) => {
     return t ? json(res, 200, { wid: Number(m[1]), ...t }) : json(res, 404, { error: 'no text (not a Terminal.app window, or not read yet)' });
   }
   if (req.method === 'GET' && (m = /^\/thumb\/(\d+)$/.exec(p))) {
-    const w = Math.max(64, Math.min(1600, Number(url.searchParams.get('w')) || 480));
-    const r = await thumb(Number(m[1]), w, url.searchParams.has('live'));
+    const w = Math.max(64, Math.min(2600, Number(url.searchParams.get('w')) || 480));
+    const r = await thumb(Number(m[1]), w, url.searchParams.has('live'), url.searchParams.has('hi'));
     if (!r) return json(res, 404, { error: 'no image' });
     res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'no-store', 'x-size': `${r.width}x${r.height}`, 'x-source': `${r.srcWidth}x${r.srcHeight}` });
     return res.end(r.jpeg);

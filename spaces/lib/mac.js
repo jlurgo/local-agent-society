@@ -190,8 +190,9 @@ function scaleAndEncode(img, width, height, maxWidth) {
  * The window's pixels as a JPEG, from whichever Space it is on.
  * @returns {Promise<{jpeg: Buffer, width: number, height: number, srcWidth: number, srcHeight: number}|null>}
  */
-async function captureWindow(wid, { maxWidth = 480, quality = 70 } = {}) {
-  const img = CGWindowListCreateImage(Infinity, Infinity, 0, 0, kCGWindowListOptionIncludingWindow, wid, kCGWindowImageBoundsIgnoreFraming | kCGWindowImageNominalResolution);
+async function captureWindow(wid, { maxWidth = 480, quality = 70, hi = false } = {}) {
+  // hi: the window's full Retina pixels (2x) — for a big view where 1x text is too soft to read; costs ~4x the capture
+  const img = CGWindowListCreateImage(Infinity, Infinity, 0, 0, kCGWindowListOptionIncludingWindow, wid, kCGWindowImageBoundsIgnoreFraming | (hi ? 0 : kCGWindowImageNominalResolution));
   if (!img) return null;
   let data = null;
   try {

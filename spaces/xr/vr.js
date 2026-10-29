@@ -29,7 +29,7 @@ const post = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 
 const EYE_Y = 1.45;
 const FLOWER = { z: -1.9, petalR: 0.78, petalROpen: 1.08, bubbleR: 0.12 };
 const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045, MOSAIC_R = 0.66;
-const THUMB_W = 400, LIVE_W = 1100, STAGE_W = 1500, STAGE_WIDTH_M = 1.6, STAGE_DIST = 1.35;
+const THUMB_W = 400, LIVE_W = 1100, STAGE_W = 1500, STAGE_W_HI = 2400, STAGE_WIDTH_M = 2.0, STAGE_DIST = 1.4;
 
 // ── renderer / scene ───────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -214,7 +214,7 @@ function buildWorld() {
   layoutFlower();
   buildMosaic();
   if (stage && !panels.some((p) => p.wid === stage.wid)) closeStage();
-  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · circle: select · tile: big · big view: trigger clicks, stick scrolls, grip a corner to resize, keys below · A/B: close`;
+  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · circle: select · tile: big · big view: trigger clicks, stick scrolls, grip + move to resize, keys below · A/B: close`;
 }
 
 function select(name) {
@@ -252,7 +252,7 @@ function openStage(panel, label) {
   scene.add(mesh); hoverables.push(mesh);
   // Four corner handles: grip one and move the controller to resize (aspect kept).
   const handles = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) => {
-    const h = new THREE.Mesh(new THREE.CircleGeometry(0.035, 24), new THREE.MeshBasicMaterial({ color: 0x8ab4ff, side: THREE.DoubleSide }));
+    const h = new THREE.Mesh(new THREE.CircleGeometry(0.055, 24), new THREE.MeshBasicMaterial({ color: 0x8ab4ff, side: THREE.DoubleSide }));
     h.userData = { action: 'resize', sx, sy, label: 'resize' };
     mesh.add(h); hoverables.push(h);
     return h;
@@ -290,7 +290,8 @@ function refreshStage() {
   if (!stage || stage.loading || performance.now() - stage.at < 200) return;
   if (stage.kind === 'terminal' && termTex.has(stage.wid)) return;
   const st = stage; st.loading = true;
-  loader.load(`/thumb/${st.wid}?w=${STAGE_W}&live=1&t=${Date.now()}`, (tex) => {
+  const hi = st.mesh.scale.x >= 1.15;   // enlarged: ask for the window's full Retina pixels
+  loader.load(`/thumb/${st.wid}?w=${hi ? STAGE_W_HI : STAGE_W}&live=1${hi ? '&hi=1' : ''}&t=${Date.now()}`, (tex) => {
     if (stage !== st) { tex.dispose(); return; }
     tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
     const old = st.mesh.material.map;
@@ -330,6 +331,7 @@ const controllers = [0, 1].map((i) => {
   c.addEventListener('selectstart', () => { const hit = pickHit(c); act(hit ? hit.object : null, uvOf(hit)); });
   c.addEventListener('squeezestart', () => startResize(c));
   c.addEventListener('squeezeend', () => { resizing = null; });
+  c.addEventListener('selectend', () => { if (resizing && resizing.byTrigger) resizing = null; });
   scene.add(c);
   return c;
 });
@@ -355,7 +357,7 @@ async function act(obj, uv = null) {
   if (!obj || busy) return;
   const u = obj.userData;
   if (u.action === 'stage') { if (uv && await ensureFocused()) post('/input', { wid: u.wid, type: 'click', ...uv }); return; }
-  if (u.action === 'resize') return;   // resizing is a grip, not a trigger
+  if (u.action === 'resize') { const c = controllers.find((k) => pickHit(k) && pickHit(k).object === obj); if (c) { startResize(c); resizing.byTrigger = true; } return; }
   if (u.action === 'key') { pressKey(u); return; }
   if (u.action === 'agent') { select(u.name); report({ act: 'select', label: u.name }); return; }
   const panel = panels.find((p) => p.wid === u.wid);
@@ -365,9 +367,13 @@ async function act(obj, uv = null) {
 const padState = new Map();
 let lastMoveAt = 0, lastScrollAt = 0;
 let resizing = null;   // { controller, plane, center, startDist, startScale }
+// Resize: grip while pointing anywhere at the big view (or at a corner), or
+// hold the trigger on a corner handle; move the controller in or out.
 function startResize(controller) {
   const hit = pickHit(controller);
-  if (!stage || !hit || hit.object.userData.action !== 'resize') return;
+  if (!stage || !hit) return;
+  const a = hit.object.userData.action;
+  if (a !== 'resize' && a !== 'stage') return;
   const center = new THREE.Vector3(); stage.mesh.getWorldPosition(center);
   const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(stage.mesh.getWorldQuaternion(new THREE.Quaternion()));
   resizing = { controller, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(normal, center), center, startDist: hit.point.distanceTo(center), startScale: stage.mesh.scale.x };
