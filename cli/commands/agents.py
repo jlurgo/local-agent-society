@@ -961,11 +961,46 @@ def wake_disable(name):
     click.echo(f"{name}: wake-up via vortexia disabled.")
 
 
+def _widget_log_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "session" / "widget.log"
+
+
+def _mic_is_recording() -> bool:
+    """Same heuristic as restart-widget.sh: the last [mic] line of
+    session/widget.log is a "recording started" with no stop after it."""
+    try:
+        lines = [l for l in _widget_log_path().read_text(errors="replace").splitlines() if "[mic]" in l]
+    except OSError:
+        return False
+    return bool(lines) and "recording started" in lines[-1]
+
+
+def _reload_widgets(name: str | None, force: bool) -> None:
+    """Ask the running app to re-run the face of one widget (or all) from the
+    checkout's widget-electron/renderer + preload.js — a CSS/HTML/renderer fix
+    is live without `npm run build` or restart-widget.sh. (main.js changes
+    still need both: that is the running process.) Never cuts a dictation:
+    waits for the mic to go idle first, unless --force."""
+    if _mic_is_recording() and not force:
+        click.echo("mic is mid-recording — waiting for the dictation to end (--force reloads anyway)")
+        while _mic_is_recording():
+            time.sleep(2)
+    target = quote(name, safe="") if name else ""
+    subprocess.run(["open", f"localagentsociety://{target}?action=reload"], check=False)
+    click.echo(f"Widget reload requested for {name}." if name else "Reload requested for every open widget.")
+
+
 @click.command("widget")
 @click.argument("name", required=False, shell_complete=complete_agent_names)
-def widget(name):
-    """Reopen the agent widget on the current Space."""
+@click.option("--reload", "reload_", is_flag=True,
+              help="Re-run this widget's face from the checkout (renderer/CSS/preload edits) without restarting the app.")
+@click.option("--force", is_flag=True, help="With --reload: don't wait for an in-flight dictation.")
+def widget(name, reload_, force):
+    """Reopen the agent widget on the current Space (or, with --reload, reload its face in place)."""
     name = resolve_agent_name(name)
+    if reload_:
+        _reload_widgets(name, force)
+        return
     subprocess.run(["open", f"localagentsociety://{quote(name, safe='')}?action=reopen"], check=False)
     # `open` on the URL scheme only asks macOS to route the request to the
     # handler app — it returns success even if that app then fails to launch
@@ -989,9 +1024,16 @@ def widget(name):
 
 
 @click.command("widgets")
-def widgets_all():
+@click.option("--reload", "reload_", is_flag=True,
+              help="Re-run every open widget's face from the checkout (renderer/CSS/preload edits) without restarting the app.")
+@click.option("--force", is_flag=True, help="With --reload: don't wait for an in-flight dictation.")
+def widgets_all(reload_, force):
     """Reopen all ACTIVE agent widgets on the current Space (inactive ones stay put away —
-    use `las widget NAME` or `las agent activate NAME` for a specific one)."""
+    use `las widget NAME` or `las agent activate NAME` for a specific one). With --reload,
+    reload every open widget's face in place instead."""
+    if reload_:
+        _reload_widgets(None, force)
+        return
     data = api.get("/agents")
     if not data:
         click.echo("No agents registered.")

@@ -60,20 +60,57 @@ const REGISTRY_URL = process.env.LAS_REGISTRY_URL || 'http://localhost:8700';
 // ── persistent logging (session/widget.log) ─────────────────────────────────
 // Launched via `open` (see start.sh), so this process's stdout/stderr goes
 // nowhere any tool can read — console.log/warn here were silent in practice.
-// This app has always assumed one fixed checkout of this repo (see the
-// hardcoded vortexia file: dependency in package.json); resolving the log
-// path the same way keeps this working both unpacked (`npm start`, __dirname
-// is widget-electron/) and packaged (__dirname is inside app.asar, so the
-// repo-relative candidate doesn't exist and we fall back to the known
-// checkout path). Format matches the project-wide convention documented in
-// the log-debug skill and tailed by `/log-debug ui`:
+// The log lives in the checkout's `session/` dir — the same file
+// restart-widget.sh tails for its mic guard and `/log-debug ui` reads. The
+// checkout is found by walking up from __dirname looking for the repo's own
+// markers (start.sh + backend/main.py): unpacked (`npm start`) __dirname is
+// widget-electron/, packaged it is inside widget-electron/dist/.../app.asar,
+// and both sit under the checkout, wherever that checkout is and whoever's
+// machine this is. (It used to fall back to one developer's hardcoded path,
+// so on any other machine the packaged app silently logged nothing.) When
+// no checkout is found at all, log under the OS's per-app logs dir rather
+// than nowhere. Format matches the project-wide convention documented in
+// the log-debug skill:
 //   [ISO8601_TIMESTAMP] LEVEL [component] message
+function findCheckoutRoot(from = __dirname) {
+  let dir = from;
+  for (let i = 0; i < 10; i++) {
+    if (fs.existsSync(path.join(dir, 'start.sh')) && fs.existsSync(path.join(dir, 'backend', 'main.py'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
 function resolveSessionLogPath() {
-  const devPath = path.join(__dirname, '..', 'session', 'widget.log');
-  if (fs.existsSync(path.dirname(devPath))) return devPath;
-  return '/Users/josetabuyo/Development/local-agent-society/session/widget.log';
+  const root = findCheckoutRoot();
+  const dir = root ? path.join(root, 'session') : app.getPath('logs');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    // best-effort — writeLog below is already best-effort
+  }
+  return path.join(dir, 'widget.log');
 }
 const SESSION_LOG_PATH = resolveSessionLogPath();
+
+// The face (the renderer dir) and preload.js are loaded from the CHECKOUT's
+// widget-electron/ when there is one, not from the copy frozen inside
+// app.asar at build time — so a CSS/HTML/renderer/preload change is live on
+// the next reload (`las widgets --reload`, the tray's "Reload widgets", or
+// `localagentsociety://?action=reload`) with no rebuild and no restart.
+// Right after a build the two copies are identical, so nothing changes for
+// a user who never edits the checkout. main.js itself still needs
+// `npm run build` + restart-widget.sh: it IS the running process.
+function resolveWidgetSources() {
+  const root = findCheckoutRoot();
+  const live = root ? path.join(root, 'widget-electron') : null;
+  if (live && fs.existsSync(path.join(live, 'renderer', 'index.html')) && fs.existsSync(path.join(live, 'preload.js'))) {
+    return { rendererDir: path.join(live, 'renderer'), preloadPath: path.join(live, 'preload.js'), live: true };
+  }
+  return { rendererDir: path.join(__dirname, 'renderer'), preloadPath: path.join(__dirname, 'preload.js'), live: false };
+}
+const WIDGET_SOURCES = resolveWidgetSources();
 
 function writeLog(level, component, message) {
   try {
@@ -212,8 +249,12 @@ function handleProtocolUrl(rawUrl) {
   } catch {
     // malformed percent-encoding — fall back to the raw string
   }
-  if (!name) return;
   const action = parsed.searchParams.get('action');
+  if (action === 'reload') {
+    reloadWidgets(name || null);
+    return;
+  }
+  if (!name) return;
 
   if (action === 'reopen') {
     reopenWidget(name);
@@ -375,7 +416,7 @@ function createWidgetWindow(name, { forgetPosition = false } = {}) {
     transparent: true,
     backgroundColor: '#00000000',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: WIDGET_SOURCES.preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
       // sandbox:false so preload.js can `require('./lib/voiceHash')` (a local,
@@ -409,7 +450,7 @@ function createWidgetWindow(name, { forgetPosition = false } = {}) {
   // widget.css's placeholder green while waiting on the async
   // window.las.getPrefs() IPC round-trip (see widget.js's initialParams
   // block, right below where agentName is read).
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'), {
+  win.loadFile(path.join(WIDGET_SOURCES.rendererDir, 'index.html'), {
     query: { agent: name, color: prefs.color, opacity: String(prefs.opacity) },
   });
 
@@ -646,12 +687,47 @@ ipcMain.on('window:set-expanded', (event, expanded, height) => {
     }
     const b = win.getBounds();
     win.setBounds({ x: b.x, y: b.y, width: b.width, height: height || EXPANDED_HEIGHT });
-  } else if (expandedWindows.has(win)) {
-    expandedWindows.delete(win);
-    const prev = collapsedBounds.get(win);
-    if (prev) win.setBounds(prev);
+  } else {
+    collapseDrawer(win);
   }
 });
+
+function collapseDrawer(win) {
+  if (!expandedWindows.has(win)) return;
+  expandedWindows.delete(win);
+  const prev = collapsedBounds.get(win);
+  if (prev) win.setBounds(prev);
+}
+
+// ── reload the face without restarting the app ─────────────────────────────
+// Re-runs the renderer (and its preload) in place, picking up whatever is
+// in the checkout's widget-electron/renderer + preload.js (see
+// WIDGET_SOURCES). Main-process state that the fresh renderer can't know is
+// pushed back to it once it has loaded: a grown (mosaic) face, the mic
+// hold. A drawer main still thinks is open is closed first, or the window
+// would stay tall around a panel that no longer exists. A window whose mic
+// is recording is skipped — a reload would lose the dictation — and logged;
+// `las widgets --reload` waits for an idle mic before asking at all.
+function reloadWidgets(name = null) {
+  const targets = name ? [windows.get(name)].filter(Boolean) : [...windows.values()];
+  let done = 0;
+  for (const win of targets) {
+    if (win.isDestroyed()) continue;
+    if (recordingWindows.has(win.agentName)) {
+      log.warn('reload', `${win.agentName}: skipped — mic is recording`);
+      continue;
+    }
+    collapseDrawer(win);
+    win.webContents.once('did-finish-load', () => {
+      if (win.isDestroyed()) return;
+      if (occlusionExpandedWindows.has(win)) win.webContents.send('window:occlusion-state', true);
+      if (recordingWindows.size > 0) win.webContents.send('mic:held', true);
+    });
+    win.webContents.reload();
+    done += 1;
+  }
+  log.info('reload', `${done}/${targets.length} widget${targets.length === 1 ? '' : 's'} reloaded${name ? ` (${name})` : ''} from ${WIDGET_SOURCES.live ? WIDGET_SOURCES.rendererDir : 'the packaged app'}`);
+}
 
 // "Expand when hidden" — restores the retired Swift widget's "Expand on
 // space change" feature (Prefs.expandOnSpaceChange / activeSpaceChanged in
@@ -1849,7 +1925,7 @@ app.whenReady().then(async () => {
     callback(permission === 'media');
   });
 
-  createTray({ registryUrl: REGISTRY_URL, onSelectAgent: openWidget, onQuit: () => app.quit() });
+  createTray({ registryUrl: REGISTRY_URL, onSelectAgent: openWidget, onReload: () => reloadWidgets(), onQuit: () => app.quit() });
 
   // System sleep/wake: the occlusion-expand/mosaic feature (see
   // the tile reconciler below) drives off document.visibilitychange,

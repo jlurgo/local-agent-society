@@ -37,7 +37,7 @@ async function fetchAgentNames(registryUrl) {
   }
 }
 
-async function buildMenu({ registryUrl, onSelectAgent, onQuit }) {
+async function buildMenu({ registryUrl, onSelectAgent, onReload, onQuit }) {
   const names = await fetchAgentNames(registryUrl);
   const agentItems = names.length
     ? names.map((n) => ({ label: n, click: () => onSelectAgent(n) }))
@@ -48,12 +48,15 @@ async function buildMenu({ registryUrl, onSelectAgent, onQuit }) {
     { type: 'separator' },
     ...agentItems,
     { type: 'separator' },
+    // Re-runs every widget's face from the checkout (main.js reloadWidgets):
+    // a renderer/CSS/preload edit shows up without rebuilding or restarting.
+    ...(onReload ? [{ label: 'Reload widgets', click: () => onReload() }] : []),
     { label: 'Quit', click: () => (onQuit ? onQuit() : app.quit()) },
   ]);
 }
 
 /**
- * @param {{registryUrl: string, onSelectAgent: (name: string) => void, onQuit?: () => void}} opts
+ * @param {{registryUrl: string, onSelectAgent: (name: string) => void, onReload?: () => void, onQuit?: () => void}} opts
  * @returns {Tray}
  */
 function createTray(opts) {
