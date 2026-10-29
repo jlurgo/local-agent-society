@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LAS Spaces — VR</title>
+  <style>
+    body { margin: 0; background: #101014; color: #eee; font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
+    #hud { position: fixed; left: 12px; top: 10px; font-size: 14px; opacity: 0.85; z-index: 2; pointer-events: none; white-space: pre-line; }
+    canvas { display: block; }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
+  </script>
+</head>
+<body>
+  <div id="hud">LAS Spaces — loading…</div>
+  <script type="module" src="/vr.js"></script>
+</body>
+</html>

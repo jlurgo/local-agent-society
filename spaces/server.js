@@ -29,6 +29,8 @@ const LOG_PATH = path.join(__dirname, '..', 'session', 'spaces.log');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg' };
 const WORLD_TICK_MS = 1000;
 const THUMB_TTL_MS = 1500;
+const LIVE_TTL_MS = 250;      // the panel being looked at: refreshed as fast as it is asked for
+const VENDOR_DIR = path.join(__dirname, 'node_modules');
 
 function log(level, component, message) {
   const line = `[${new Date().toISOString()}] ${level.padEnd(5)} [${component}] ${message}\n`;
@@ -62,11 +64,11 @@ async function tickWorld() {
 
 // ── thumbnails: one capture per window per TTL, never two of the same at once ──
 const thumbs = new Map();   // key → { at, promise }
-function thumb(wid, w) {
+function thumb(wid, w, live = false) {
   const key = `${wid}:${w}`;
   const c = thumbs.get(key);
   const now = Date.now();
-  if (c && now - c.at < THUMB_TTL_MS) return c.promise;
+  if (c && now - c.at < (live ? LIVE_TTL_MS : THUMB_TTL_MS)) return c.promise;
   const promise = mac.captureWindow(wid, { maxWidth: w }).catch((err) => { warn('thumb', `${wid}: ${err && err.message ? err.message : err}`); return null; });
   thumbs.set(key, { at: now, promise });
   if (thumbs.size > 400) thumbs.delete(thumbs.keys().next().value);
@@ -180,7 +182,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && p === '/world') return json(res, 200, world);
   if (req.method === 'GET' && (m = /^\/thumb\/(\d+)$/.exec(p))) {
     const w = Math.max(64, Math.min(1600, Number(url.searchParams.get('w')) || 480));
-    const r = await thumb(Number(m[1]), w);
+    const r = await thumb(Number(m[1]), w, url.searchParams.has('live'));
     if (!r) return json(res, 404, { error: 'no image' });
     res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'no-store', 'x-size': `${r.width}x${r.height}`, 'x-source': `${r.srcWidth}x${r.srcHeight}` });
     return res.end(r.jpeg);
@@ -191,9 +193,11 @@ const server = http.createServer(async (req, res) => {
     info('hello', (await readBody(req)).replace(/\s+/g, ' ').slice(0, 1000));
     return res.writeHead(204).end();
   }
+  // /vendor/<package>/... → spaces/node_modules (three.js for the headset app; served, never bundled)
   const rel = p === '/' ? '/index.html' : decodeURIComponent(p);
-  const file = path.normalize(path.join(XR_DIR, rel));
-  if (!file.startsWith(XR_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end('not found');
+  const root = rel.startsWith('/vendor/') ? VENDOR_DIR : XR_DIR;
+  const file = path.normalize(path.join(root, rel.startsWith('/vendor/') ? rel.slice('/vendor/'.length) : rel));
+  if (!file.startsWith(root) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end('not found');
   res.writeHead(200, { 'content-type': TYPES[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' });
   fs.createReadStream(file).pipe(res);
 });
