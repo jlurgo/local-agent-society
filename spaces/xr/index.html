@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LAS Spaces — hello</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #eee; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 16px; }
+    button { font-size: 28px; padding: 18px 36px; border-radius: 14px; border: 0; background: #4f8cff; color: #fff; }
+    button:disabled { background: #555; }
+    #status { font-size: 20px; max-width: 80vw; text-align: center; white-space: pre-wrap; }
+    canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: -1; }
+  </style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+  <h1>LAS Spaces — hello</h1>
+  <div id="status">checking WebXR…</div>
+  <button id="enter" disabled>Enter VR</button>
+  <script>
+    const statusEl = document.getElementById('status');
+    const btn = document.getElementById('enter');
+    // Two channels for every report: a fetch, and a WebSocket opened at page
+    // load — phase 0 measures which of them survives the immersive session.
+    let ws = null;
+    try {
+      ws = new WebSocket(`ws://${location.host}/ws`);
+      ws.onopen = () => ws.send(JSON.stringify({ t: Date.now(), via: 'ws', hello: true }));
+      ws.onclose = () => { ws = null; };
+    } catch (e) { ws = null; }
+    const report = (data) => {
+      const body = JSON.stringify({ t: Date.now(), ua: navigator.userAgent, ...data });
+      if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify({ via: 'ws', ...data, t: Date.now() })); } catch (e) { /* measured on the server side */ } }
+      return fetch('/hello', { method: 'POST', headers: { 'content-type': 'application/json' }, body }).catch(() => {});
+    };
+    const say = (s) => { statusEl.textContent = s; };
+
+    (async () => {
+      if (!navigator.xr) { say('navigator.xr is missing — not a WebXR browser, or not a secure context'); report({ xr: false, secure: window.isSecureContext }); return; }
+      const ok = await navigator.xr.isSessionSupported('immersive-vr').catch((e) => String(e));
+      say(ok === true ? 'immersive-vr supported — press Enter VR' : `immersive-vr: ${ok}`);
+      report({ xr: true, secure: window.isSecureContext, immersiveVr: ok });
+      btn.disabled = ok !== true;
+    })();
+
+    btn.addEventListener('click', async () => {
+      const canvas = document.getElementById('gl');
+      const gl = canvas.getContext('webgl', { xrCompatible: true });
+      let session;
+      try {
+        session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor'] });
+      } catch (e) { say('requestSession failed: ' + e); report({ sessionError: String(e) }); return; }
+      await gl.makeXRCompatible();
+      session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+      const space = await session.requestReferenceSpace('local-floor').catch(() => session.requestReferenceSpace('local'));
+      let frames = 0; const t0 = performance.now();
+      report({ sessionStarted: true, refSpace: space ? 'ok' : 'none' });
+      say('in VR — a colour sweep; the session reports frame rate after 5 s');
+      session.requestAnimationFrame(function onFrame(t, frame) {
+        const layer = session.renderState.baseLayer;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+        const pose = frame.getViewerPose(space);
+        const hue = (t / 20) % 360;
+        const [r, g, b] = hsl(hue, 0.5, 0.35);
+        gl.clearColor(r, g, b, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        frames++;
+        if (frames % 72 === 0) report({ beat: frames, fps: Math.round(frames / ((performance.now() - t0) / 1000)), views: pose ? pose.views.length : 0 });
+        session.requestAnimationFrame(onFrame);
+      });
+      session.addEventListener('end', () => { say('VR session ended'); report({ sessionEnded: true, frames }); });
+    });
+    function hsl(h, s, l) { const k = (n) => (n + h / 30) % 12; const a = s * Math.min(l, 1 - l); const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))); return [f(0), f(8), f(4)]; }
+  </script>
+</body>
+</html>
