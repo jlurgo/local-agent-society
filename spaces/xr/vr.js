@@ -23,7 +23,8 @@ const post = (p) => fetch(p, { method: 'POST' }).then((r) => r.json()).catch((e)
 const PANEL_W = 0.56, PANEL_H = PANEL_W * 9 / 16, PANEL_GAP = 0.05, LABEL_H = 0.05;
 const COLS = 2, BOARD_PAD = 0.06, HEADER_H = 0.11;
 const EYE_Y = 1.5;
-const THUMB_W = 400, LIVE_W = 1100;
+const THUMB_W = 400, LIVE_W = 1100, STAGE_W = 1500;
+const STAGE_WIDTH_M = 1.7, STAGE_DIST = 1.7;
 
 // ── renderer / scene ───────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -60,6 +61,8 @@ const ink = (hex) => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.
 // ── boards ─────────────────────────────────────────────────────────────────
 let world = null;
 let layout = localStorage.getItem('las-spaces-layout') || 'ring';
+let focusedSpace = null;    // the Space whose board is big in the middle (default: the Mac's current one)
+let ringOffset = 0;         // thumbstick / arrow keys turn the ring
 const boards = [];          // { group, space, header, panels: [{ mesh, wid, tex, title }] }
 const hoverables = [];      // meshes with userData.action
 let hovered = null;
@@ -122,19 +125,27 @@ function placeBoards() {
       if (c === 0 && r > 0) y -= rowsH[r - 1] / 2 + rowsH[r] / 2 + 0.1;
       b.group.position.set((c - (cols - 1) / 2) * colW, y, -2.6);
       b.group.rotation.set(0, 0, 0);
+      b.group.scale.setScalar(1);
     });
     return;
   }
-  // ring: Mission Control order, the current Space straight ahead (−z)
-  const cur = Math.max(0, boards.findIndex((b) => b.space.current));
-  const step = Math.max(...boards.map((b) => b.w)) + 0.18;
-  const radius = Math.max(2.3, (n * step) / (2 * Math.PI) * 1.25);
+  // ring: one big board in the middle (the focused Space — the Mac's current
+  // one until you pick another), the others smaller on an arc around it, in
+  // Mission Control order; the whole ring turns with the thumbstick.
+  let cur = boards.findIndex((b) => b.space.id === focusedSpace);
+  if (cur === -1) cur = Math.max(0, boards.findIndex((b) => b.space.current));
+  const step = Math.max(...boards.map((b) => b.w)) * 0.72 + 0.14;
+  const radius = Math.max(2.6, (n * step) / (2 * Math.PI) * 1.3);
   const dAngle = step / radius;
   boards.forEach((b, i) => {
-    const a = (i - cur) * dAngle;           // + to the right
-    b.group.position.set(Math.sin(a) * radius, EYE_Y + 0.15, -Math.cos(a) * radius);
-    b.group.rotation.set(0, -a, 0);
-    b.group.lookAt(0, EYE_Y + 0.15, 0);
+    const focused = i === cur;
+    const a = (i - cur) * dAngle + ringOffset;   // + to the right
+    const r = focused ? 1.9 : radius;
+    const sc = focused ? 1.35 : 0.72;
+    b.group.position.set(Math.sin(a) * r, EYE_Y + (focused ? 0.1 : 0.25), -Math.cos(a) * r);
+    b.group.scale.setScalar(sc);
+    b.group.lookAt(0, b.group.position.y, 0);
+    b.group.children[0].material.color.set(focused ? 0x1d2a44 : b.space.current ? 0x22304a : 0x1c1c22);
   });
 }
 
@@ -143,8 +154,58 @@ function buildWorld() {
   if (!world || !world.displays[0]) return;
   const agents = Object.fromEntries(world.agents.map((a) => [a.name, a]));
   for (const s of world.displays[0].spaces) if (s.agents.length || s.windows.length) makeBoard(s, agents);
+  if (!focusedSpace || !boards.some((b) => b.space.id === focusedSpace)) { const c = world.displays[0].spaces.find((s) => s.current); focusedSpace = c ? c.id : null; }
   placeBoards();
-  hud.textContent = `LAS Spaces — ${boards.length} boards · ${layout} · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'}`;
+  if (stage && !boards.some((b) => b.panels.some((p) => p.wid === stage.wid))) closeStage();
+  hud.textContent = `LAS Spaces — ${boards.length} boards · ${layout} · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · trigger: open · grip: layout · stick: turn · B/Y: close`;
+}
+
+// ── the stage: one window, big and live, in front of you ────────────────────
+// Trigger on a panel: the Mac focuses that window (your keyboard goes there)
+// and it opens here at STAGE_W px, refreshed as fast as the server captures.
+// Trigger on the stage, or B/Y, closes it. Pointer input INTO it is a later
+// phase (plan: phase 6).
+let stage = null;
+function openStage(panel, label) {
+  closeStage();
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M, STAGE_WIDTH_M * 9 / 16), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+  mesh.position.set(0, EYE_Y + 0.05, -STAGE_DIST);
+  mesh.userData = { action: 'stage', wid: panel.wid, label };
+  const frame = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M + 0.04, STAGE_WIDTH_M * 9 / 16 + 0.04), new THREE.MeshBasicMaterial({ color: 0x8ab4ff }));
+  frame.position.z = -0.003;
+  mesh.add(frame);
+  const title = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(label, { width: 1536, height: 64, font: '34px -apple-system, system-ui, sans-serif', fg: '#fff' }), transparent: true }));
+  title.position.y = STAGE_WIDTH_M * 9 / 32 + 0.05;
+  mesh.add(title);
+  scene.add(mesh); hoverables.push(mesh);
+  stage = { wid: panel.wid, mesh, loading: false, at: 0, aspectSet: false };
+}
+function closeStage() {
+  if (!stage) return;
+  scene.remove(stage.mesh);
+  const i = hoverables.indexOf(stage.mesh); if (i !== -1) hoverables.splice(i, 1);
+  stage.mesh.traverse((o) => { if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); } if (o.geometry) o.geometry.dispose(); });
+  if (hovered === stage.mesh) setHovered(null);
+  stage = null;
+}
+function refreshStage() {
+  if (!stage || stage.loading || performance.now() - stage.at < 200) return;
+  const st = stage; st.loading = true;
+  loader.load(`/thumb/${st.wid}?w=${STAGE_W}&live=1&t=${Date.now()}`, (tex) => {
+    if (stage !== st) { tex.dispose(); return; }
+    tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
+    const old = st.mesh.material.map;
+    st.mesh.material.map = tex; st.mesh.material.color.set(0xffffff); st.mesh.material.needsUpdate = true;
+    if (old) old.dispose();
+    if (!st.aspectSet && tex.image && tex.image.width) {   // the real window's aspect, once
+      st.aspectSet = true;
+      const h = STAGE_WIDTH_M * tex.image.height / tex.image.width;
+      st.mesh.geometry.dispose(); st.mesh.geometry = new THREE.PlaneGeometry(STAGE_WIDTH_M, h);
+      st.mesh.children[0].geometry.dispose(); st.mesh.children[0].geometry = new THREE.PlaneGeometry(STAGE_WIDTH_M + 0.04, h + 0.04);
+      st.mesh.children[1].position.y = h / 2 + 0.05;
+    }
+    st.loading = false; st.at = performance.now();
+  }, undefined, () => { st.loading = false; st.at = performance.now(); });
 }
 
 // ── textures: every panel every ~3 s, the pointed one live ─────────────────
@@ -161,6 +222,7 @@ function refresh(panel, live) {
   }, undefined, () => { panel.loading = false; panel.at = performance.now(); });
 }
 setInterval(() => {
+  refreshStage();
   const now = performance.now();
   for (const b of boards) for (const p of b.panels) {
     const live = hovered && hovered.userData.wid === p.wid;
@@ -198,11 +260,43 @@ function toggleLayout() { layout = layout === 'ring' ? 'wall' : 'ring'; localSto
 let busy = false;
 async function act(obj) {
   if (!obj || busy) return;
-  busy = true;
   const u = obj.userData;
-  const r = u.action === 'window' ? await post(`/window/${u.wid}/focus`) : await post(`/space/${u.space}/activate`);
+  if (u.action === 'stage') { closeStage(); return; }
+  busy = true;
+  let r;
+  if (u.action === 'window') {
+    const panel = boards.flatMap((b) => b.panels).find((p) => p.wid === u.wid);
+    if (panel) openStage(panel, u.label);
+    r = await post(`/window/${u.wid}/focus`);
+  } else {
+    focusedSpace = u.space; ringOffset = 0; placeBoards();
+    r = await post(`/space/${u.space}/activate`);
+  }
   report({ act: u.action, label: u.label, result: r });
   busy = false;
+}
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft') { ringOffset += 0.12; placeBoards(); }
+  if (e.key === 'ArrowRight') { ringOffset -= 0.12; placeBoards(); }
+  if (e.key === 'Escape') closeStage();
+});
+// Thumbstick turns the ring; B/Y closes the stage; A/X toggles the layout.
+const padState = new Map();
+let lastTick = performance.now();
+function pollGamepads() {
+  const now = performance.now(), dt = Math.min(0.1, (now - lastTick) / 1000); lastTick = now;
+  const session = renderer.xr.getSession();
+  if (!session) return;
+  for (const src of session.inputSources) {
+    const gp = src.gamepad; if (!gp) continue;
+    const x = gp.axes[2] || 0;
+    if (Math.abs(x) > 0.25) { ringOffset -= x * dt * 1.6; placeBoards(); }
+    const prev = padState.get(src) || {};
+    const b4 = gp.buttons[4] && gp.buttons[4].pressed, b5 = gp.buttons[5] && gp.buttons[5].pressed;
+    if (b4 && !prev.b4) toggleLayout();
+    if (b5 && !prev.b5) closeStage();
+    padState.set(src, { b4, b5 });
+  }
 }
 
 function setHovered(obj) {
@@ -216,6 +310,7 @@ function setHovered(obj) {
 }
 
 renderer.setAnimationLoop(() => {
+  pollGamepads();
   let h = null;
   if (renderer.xr.isPresenting) { for (const c of controllers) { h = pick(c) || h; } }
   else { raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; h = hit ? hit.object : null; }
