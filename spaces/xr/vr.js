@@ -28,7 +28,7 @@ const post = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 
 
 // ── layout (meters / radians) — everything on spheres around your head ─────
 const EYE_Y = 1.25;
-const CLOUD = { r: 1.9, step: 0.19, follow: 0.06, bubbleR: 0.21, margin: 0.05 };   // sunflower of bubbles: follows the gaze, flows around what is in the middle
+const CLOUD = { r: 1.9, step: 0.2, follow: 0.06, bubbleR: 0.21, margin: 0.05, attract: 14, damp: 5.5, repel: 9, gap: 1.06 };   // sunflower of bubbles: follows the gaze, flows around what is in the middle
 const MOSAIC = { r: 1.85, az: 0.36, el: 0.27, aside: 0.62 };
 const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045;
 const THUMB_W = 400, LIVE_W = 1100, SCREEN_W = 1500, SCREEN_W_HI = 2400, SCREEN_WIDTH_M = 1.7, SCREEN_DIST = 1.4, MAX_SCREENS = 3;
@@ -194,11 +194,11 @@ function agentWindows(agent) {
 function makeFlower(agent) {
   const color = agent.color || '#90c060';
   const group = new THREE.Group();
-  const circle = new THREE.Mesh(new THREE.PlaneGeometry(CLOUD.bubbleR * 2, CLOUD.bubbleR * 2), new THREE.MeshBasicMaterial({ map: bubbleFaceTexture(agent.name, color), transparent: true, side: THREE.DoubleSide }));
+  const circle = new THREE.Mesh(new THREE.PlaneGeometry(CLOUD.bubbleR * 2, CLOUD.bubbleR * 2), new THREE.MeshBasicMaterial({ map: bubbleFaceTexture(agent.name, color), transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }));
   circle.userData = { action: 'agent', name: agent.name, label: agent.name };
   group.add(circle); hoverables.push(circle);
   const label = { visible: true };   // the name lives inside the circle now
-  const f = { group, circle, label, agent, color, target: new THREE.Vector3(), phase: Math.random() * Math.PI * 2, speech: null, title: null, talking: false };
+  const f = { group, circle, label, agent, color, target: new THREE.Vector3(), vel: new THREE.Vector3(), r: CLOUD.r, phase: Math.random() * Math.PI * 2, speech: null, title: null, talking: false, fresh: true };
   flowers.set(agent.name, f);
   root.add(group);
   return f;
@@ -246,11 +246,12 @@ function layoutCloud() {
   const c = cloudCenter(), obs = obstacles();
   order.forEach((n, i) => {
     const f = flowers.get(n);
-    if (n === selected) { f.target.copy(onSphere(mosaicCenter().az, 0, MOSAIC.r - 0.05)); return; }
+    if (n === selected) { f.r = MOSAIC.r - 0.05; f.target.copy(onSphere(mosaicCenter().az, 0, f.r)); return; }
     const k = selected ? i : i + 1;                   // with nothing selected, no seed sits dead center
     const rr = CLOUD.step * Math.sqrt(k), th = k * GOLDEN;
     const a = avoid(c.az + rr * Math.cos(th), c.el + rr * Math.sin(th), obs);
-    f.target.copy(onSphere(a.az, a.el, f.talking ? CLOUD.r - 0.5 : CLOUD.r));   // a talking agent comes closer
+    f.r = f.talking ? CLOUD.r - 0.5 : CLOUD.r;         // a talking agent comes closer
+    f.target.copy(onSphere(a.az, a.el, f.r));
   });
 }
 
@@ -597,6 +598,46 @@ function setHovered(obj) {
   if (obj && obj.userData && (obj.userData.action === 'key' || obj.userData.action === 'window')) obj.scale.setScalar(1.08);
 }
 
+// ── the molecules: each bubble is pulled to its seed and pushed off its neighbours ──
+// A spring to the seed, damping, a soft repulsion inside 1.6 radii and a hard
+// collision at touching distance (so bubbles never overlap: they bump), then
+// the position is put back on the bubble's sphere around the viewer. A big
+// (talking, hovered) bubble pushes the others away; small ones pack closer.
+const _d = new THREE.Vector3(), _acc = new THREE.Vector3();
+function moleculeStep(dt, t) {
+  const list = [...flowers.values()].filter((f) => f.circle.visible);
+  for (const f of list) {
+    if (f.fresh) { f.group.position.copy(f.target); f.fresh = false; }
+    _acc.copy(f.target).sub(f.group.position).multiplyScalar(CLOUD.attract);
+    _acc.y += Math.sin(t * 1.3 + f.phase) * 0.06;                        // a gentle bob
+    _acc.addScaledVector(f.vel, -CLOUD.damp);
+    f.vel.addScaledVector(_acc, dt);
+  }
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const a = list[i], b = list[j];
+    _d.copy(a.group.position).sub(b.group.position);
+    const dist = _d.length() || 1e-4;
+    const minDist = CLOUD.bubbleR * (a.circle.scale.x + b.circle.scale.x) * CLOUD.gap;
+    if (dist < minDist * 1.6) {
+      _d.divideScalar(dist);
+      const push = CLOUD.repel * (1 - dist / (minDist * 1.6));
+      a.vel.addScaledVector(_d, push * dt); b.vel.addScaledVector(_d, -push * dt);
+      if (dist < minDist) {                                                 // touching: separate now, and bounce
+        const ov = (minDist - dist) / 2;
+        a.group.position.addScaledVector(_d, ov); b.group.position.addScaledVector(_d, -ov);
+        const vn = a.vel.dot(_d) - b.vel.dot(_d);
+        if (vn < 0) { a.vel.addScaledVector(_d, -vn * 0.6); b.vel.addScaledVector(_d, vn * 0.6); }
+      }
+    }
+  }
+  for (const f of list) {
+    f.group.position.addScaledVector(f.vel, dt);
+    _d.copy(f.group.position).sub(viewer);                                  // back onto its sphere
+    const len = _d.length() || 1;
+    f.group.position.copy(viewer).addScaledVector(_d, (f.r / root.scale.x) / len);
+  }
+}
+
 // ── the frame ──────────────────────────────────────────────────────────────
 const clock = new THREE.Clock();
 const fwd = new THREE.Vector3();
@@ -619,13 +660,13 @@ renderer.setAnimationLoop(() => {
   placeMosaic();
   placeKeyboard();
   const t = clock.getElapsedTime();
+  const dt = Math.min(0.05, clock.getDelta() || 0.016);
   for (const f of flowers.values()) {
-    f.group.position.lerp(f.target, 0.08);
-    f.group.position.y += Math.sin(t * 1.3 + f.phase) * 0.0025;
     const base = f.talking ? 1.5 + Math.sin(t * 6) * 0.12 : 1;         // inflated and pulsing while it talks
     f.circle.scale.setScalar(THREE.MathUtils.lerp(f.circle.scale.x, hovered === f.circle ? base * 1.12 : base, 0.2));
-    f.group.lookAt(viewerWorld);
   }
+  moleculeStep(dt, t);
+  for (const f of flowers.values()) { if (!f.circle.visible) f.group.position.lerp(f.target, 0.1); f.group.lookAt(viewerWorld); }
   let h = null;
   if (renderer.xr.isPresenting) { for (const c of controllers) h = (pickHit(c) || {}).object || h; }
   else { raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; h = hit ? hit.object : null; }
