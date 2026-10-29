@@ -5,8 +5,10 @@
  * looking at (otherwise the face itself shows the text).
  *
  * Each bubble is its own small always-on-top window, visible on every Space,
- * in the agent's color, stacked from the top of the screen edge it belongs
- * to (one stack per display per side). It never takes focus when it
+ * in the agent's color, piled up from the BOTTOM corner of the side it
+ * belongs to — newest at the bottom, older ones pushed up (one pile per
+ * display per side; the top of the screen is where the widgets themselves
+ * tend to live, and a bubble over a widget read as part of it). It never takes focus when it
  * appears (showInactive) — typing into the text reply focuses it, nothing
  * else does. It goes away on its own after BUBBLE_TTL_MS unless the pointer
  * is over it or a text reply is open, on ✕, after a reply is sent, or when
@@ -27,25 +29,29 @@ const BUBBLE_WIDTH = 340;
 const BUBBLE_MIN_HEIGHT = 72;
 const BUBBLE_MAX_HEIGHT = 320;
 const BUBBLE_MARGIN = 10;     // from the screen edge, and between stacked bubbles
-const BUBBLE_TOP = 12;        // below the menu bar / top of the work area
+const BUBBLE_BOTTOM = 12;     // above the Dock / bottom of the work area
 const BUBBLE_TTL_MS = 20000;
 const BUBBLE_MAX_PER_STACK = 5;
 
 /**
- * Pure: the bounds of each bubble of one stack, top to bottom, hugging the
- * given side of the work area.
+ * Pure: the bounds of each bubble of one pile, in the order given (oldest
+ * first), hugging the given side of the work area and piled up from its
+ * bottom edge: the LAST bubble sits at the bottom, each earlier one above
+ * the next.
  * @param {{x:number,y:number,width:number,height:number}} workArea
  * @param {number[]} heights
  * @param {'left'|'right'} side
  */
 function stackPositions(workArea, heights, side, width = BUBBLE_WIDTH) {
   const x = side === 'left' ? workArea.x + BUBBLE_MARGIN : workArea.x + workArea.width - width - BUBBLE_MARGIN;
-  let y = workArea.y + BUBBLE_TOP;
-  return heights.map((height) => {
-    const bounds = { x, y, width, height };
-    y += height + BUBBLE_MARGIN;
-    return bounds;
-  });
+  let y = workArea.y + workArea.height - BUBBLE_BOTTOM;
+  const out = new Array(heights.length);
+  for (let i = heights.length - 1; i >= 0; i--) {
+    y -= heights[i];
+    out[i] = { x, y, width, height: heights[i] };
+    y -= BUBBLE_MARGIN;
+  }
+  return out;
 }
 
 function clampHeight(h) {

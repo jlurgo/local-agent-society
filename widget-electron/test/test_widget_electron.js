@@ -1003,14 +1003,15 @@ test('every local module main.js requires is on electron-builder\'s files whitel
   }
 });
 
-test('bubbles: stackPositions hugs the given screen edge and stacks from the top with a gap', () => {
+test('bubbles: stackPositions hugs the given screen edge and piles up from the bottom, newest lowest', () => {
   const src = readSrc('bubbles.js');
   const body = extractFunctionBody(src, 'function stackPositions(workArea, heights, side, width = BUBBLE_WIDTH) {');
-  const fn = new Function('BUBBLE_WIDTH', 'BUBBLE_MARGIN', 'BUBBLE_TOP', `function stackPositions(workArea, heights, side, width = BUBBLE_WIDTH) ${body} return stackPositions;`)(340, 10, 12);
+  const fn = new Function('BUBBLE_WIDTH', 'BUBBLE_MARGIN', 'BUBBLE_BOTTOM', `function stackPositions(workArea, heights, side, width = BUBBLE_WIDTH) ${body} return stackPositions;`)(340, 10, 12);
   const area = { x: 100, y: 25, width: 1000, height: 800 };
-  const right = fn(area, [80, 120], 'right');
-  assert.deepEqual(right[0], { x: 100 + 1000 - 340 - 10, y: 37, width: 340, height: 80 });
-  assert.equal(right[1].y, 37 + 80 + 10, 'the second bubble sits under the first plus the gap');
+  const right = fn(area, [80, 120], 'right');       // oldest first
+  const bottom = 25 + 800 - 12;
+  assert.deepEqual(right[1], { x: 100 + 1000 - 340 - 10, y: bottom - 120, width: 340, height: 120 }, 'the newest sits at the bottom');
+  assert.equal(right[0].y, bottom - 120 - 10 - 80, 'the older one is pushed up above it plus the gap');
   const left = fn(area, [80], 'left');
   assert.equal(left[0].x, 110, 'left side: a margin in from the left edge');
 });

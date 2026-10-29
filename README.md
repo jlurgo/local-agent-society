@@ -316,9 +316,10 @@ When an agent speaks (the short spoken summary of its results, `las speak`)
 and its widget is on a Space other than the one you are looking at, a
 bubble in the agent's color slides in at the edge of the screen on the side
 that Space lies — left if the agent's Space is to the left of the current
-one in Mission Control order, right otherwise. Bubbles stack from the top,
-never take focus when they appear, and go away on their own after 20 s
-unless the pointer is over one or a text answer is open.
+one in Mission Control order, right otherwise. Bubbles pile up from the
+bottom corner of that side (newest at the bottom, older ones pushed up, one
+pile per side), never take focus when they appear, and go away on their own
+after 20 s unless the pointer is over one or a text answer is open.
 
 - **Click the text** → macOS switches to that agent's Space (its widget is
   focused).
