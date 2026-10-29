@@ -18,6 +18,7 @@
 // flat with a mouse, which is how it is checked from the Mac.
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { ARButton } from 'three/addons/webxr/ARButton.js';
 
 const hud = document.getElementById('hud');
 const report = (data) => fetch('/hello', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ t: Date.now(), vr: true, ...data }) }).catch(() => {});
@@ -32,22 +33,33 @@ const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045, MOSAIC_R = 0.6
 const THUMB_W = 400, LIVE_W = 1100, STAGE_W = 1500, STAGE_W_HI = 2400, STAGE_WIDTH_M = 2.0, STAGE_DIST = 1.4;
 
 // ── renderer / scene ───────────────────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+// Your room as the background: an immersive-AR session shows the headset's
+// cameras (passthrough) behind the scene — transparent background, no
+// floor. Falls back to plain VR where AR is not offered.
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x000000, 0);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 document.body.appendChild(renderer.domElement);
-document.body.appendChild(VRButton.createButton(renderer));
+let passthrough = false;
+(async () => {
+  const ar = navigator.xr && await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+  passthrough = Boolean(ar);
+  document.body.appendChild(passthrough ? ARButton.createButton(renderer, { optionalFeatures: ['local-floor', 'hand-tracking'] }) : VRButton.createButton(renderer));
+  report({ passthrough });
+  if (!passthrough) { scene.background = new THREE.Color(0x0f0f14); floor.visible = grid.visible = true; }
+})();
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0f0f14);
+scene.background = null;
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 60);
 camera.position.set(0, EYE_Y, 0);
 scene.add(new THREE.HemisphereLight(0xffffff, 0x303040, 1.1));
 const sun = new THREE.DirectionalLight(0xffffff, 0.8); sun.position.set(1, 3, 2); scene.add(sun);
 const floor = new THREE.Mesh(new THREE.CircleGeometry(6, 48), new THREE.MeshBasicMaterial({ color: 0x14141a }));
-floor.rotation.x = -Math.PI / 2; scene.add(floor);
-const grid = new THREE.GridHelper(12, 24, 0x262630, 0x1c1c24); grid.position.y = 0.001; scene.add(grid);
+floor.rotation.x = -Math.PI / 2; floor.visible = false; scene.add(floor);
+const grid = new THREE.GridHelper(12, 24, 0x262630, 0x1c1c24); grid.position.y = 0.001; grid.visible = false; scene.add(grid);
 window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
 
 // ── text as textures ───────────────────────────────────────────────────────
