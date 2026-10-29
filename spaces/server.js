@@ -80,7 +80,10 @@ function osascript(lines) {
   });
 }
 
-/** Switch to a Space: ctrl+←/→ as many times as the Mission Control distance (the default macOS shortcuts). */
+/** Switch to a Space. Direct: raise the frontmost window on it — macOS jumps
+ * there in one move. Fallback (a Space with no window): ctrl+←/→ as many
+ * times as the Mission Control distance, which walks through every desktop
+ * in between. */
 async function activateSpace(id) {
   const d = world.displays.find((x) => x.spaces.some((s) => s.id === id));
   if (!d) return { ok: false, error: 'unknown space' };
@@ -88,6 +91,16 @@ async function activateSpace(id) {
   const to = d.spaces.findIndex((s) => s.id === id);
   if (from === -1 || to === -1) return { ok: false, error: 'no current space' };
   if (from === to) return { ok: true, steps: 0 };
+  // A vehicle window on the target Space, most reliable first: a terminal
+  // (its app scripting raises it for real), then anything that is not a
+  // browser (Chrome's scripting does not switch Spaces — see focusWindow).
+  const wins = d.spaces[to].windows;   // front to back
+  const vehicle = wins.find((w) => w.kind === 'terminal') || wins.find((w) => w.kind !== 'browser');
+  if (vehicle) {
+    const r = await raiseWindow(vehicle, d.spaces[to].id);
+    if (r.ok) { info('space', `activate ${id}: jumped via "${vehicle.title.slice(0, 40)}" (${vehicle.app})`); return { ok: true, via: 'window', wid: vehicle.wid }; }
+    warn('space', `activate ${id}: direct jump failed (${r.error}); stepping`);
+  }
   const keyCode = to > from ? 124 : 123;   // → / ←
   const steps = Math.abs(to - from);
   const script = [`tell application "System Events"`, ...Array.from({ length: steps }, () => `key code ${keyCode} using control down\ndelay 0.25`), 'end tell'];
@@ -96,17 +109,55 @@ async function activateSpace(id) {
   return r.ok ? { ok: true, steps } : { ok: false, error: r.stderr };
 }
 
-/** Bring a window to the front via System Events (AXRaise + frontmost): switches Space as a side effect. */
+/** The Space the display is showing right now (fresh read, not the cached world). */
+function currentSpaceNow() {
+  try { return mac.displaySpaces()[0].current; } catch { return null; }
+}
+
+/**
+ * Bring a window to the front — and, when it lives on another Space, make
+ * macOS switch there. Raising through System Events is not enough for an
+ * app that also has windows on the current Space (Chrome, Terminal): the app
+ * activates where you are. So scriptable apps are told to make THAT window
+ * their front window first (`set index … to 1`), then activated; the Space
+ * switch is verified by reading the current Space again, and a miss falls
+ * back to the generic raise.
+ */
 async function focusWindow(wid) {
-  let win = null;
-  for (const d of world.displays) for (const s of d.spaces) for (const w of s.windows) if (w.wid === wid) win = w;
+  let win = null, space = null;
+  for (const d of world.displays) for (const s of d.spaces) for (const w of s.windows) if (w.wid === wid) { win = w; space = s.id; }
   if (!win) return { ok: false, error: 'unknown window' };
-  const esc = (s) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const r = await osascript([
-    `tell application "System Events"\n  tell (first process whose unix id is ${win.pid || 0})\n    set frontmost to true\n    try\n      perform action "AXRaise" of (first window whose name is "${esc(win.title)}")\n    end try\n  end tell\nend tell`,
-  ]);
-  info('window', `focus ${wid} "${win.title.slice(0, 40)}" (${win.app}) ${r.ok ? 'ok' : 'FAILED ' + r.stderr}`);
-  return r.ok ? { ok: true } : { ok: false, error: r.stderr };
+  if (win.kind === 'browser' && space !== currentSpaceNow()) {
+    // Chrome never switches Space by itself: go there first with a reliable window, then raise the browser window there.
+    const r = await activateSpace(space);
+    if (!r.ok) return r;
+    await new Promise((res) => setTimeout(res, 400));   // let the Space animation land
+  }
+  return raiseWindow(win, space);
+}
+
+async function raiseWindow(win, space) {
+  const wid = win.wid;
+  const esc = (t) => t.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const before = currentSpaceNow();
+  const scripts = [];
+  if (win.app === 'Google Chrome' || win.app === 'Brave Browser' || win.app === 'Chromium') {
+    scripts.push(`tell application "${win.app}"\n  set index of (first window whose title is "${esc(win.title)}") to 1\n  activate\nend tell`);
+  } else if (win.app === 'Terminal' || win.app === 'iTerm2') {
+    scripts.push(`tell application "${win.app}"\n  set index of (first window whose name is "${esc(win.title)}") to 1\n  activate\nend tell`);
+  }
+  scripts.push(`tell application "System Events"\n  tell (first process whose unix id is ${win.pid || 0})\n    set frontmost to true\n    try\n      perform action "AXRaise" of (first window whose name is "${esc(win.title)}")\n    end try\n  end tell\nend tell`);
+  let last = null;
+  for (const script of scripts) {
+    last = await osascript([script]);
+    if (!last.ok) { warn('window', `focus ${wid}: ${last.stderr.slice(0, 120)}`); continue; }
+    if (space !== before) await new Promise((res) => setTimeout(res, 350));   // the Space animation must land before the read
+    const after = currentSpaceNow();
+    const switched = space === before || after === space;
+    info('window', `focus ${wid} "${win.title.slice(0, 40)}" (${win.app}) ok${space !== before ? (switched ? ', switched Space' : ', Space did NOT switch') : ''}`);
+    if (switched) return { ok: true, switched: space !== before };
+  }
+  return { ok: false, error: last && last.stderr ? last.stderr : 'the Space did not switch' };
 }
 
 // ── http ───────────────────────────────────────────────────────────────────

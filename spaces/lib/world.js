@@ -85,7 +85,7 @@ async function buildWorld() {
     const space = spaceOf(w.wid, now);
     if (!space) continue;
     const kind = TERMINAL_APPS.has(w.app) ? 'terminal' : BROWSER_APPS.has(w.app) ? 'browser' : 'other';
-    const entry = { wid: w.wid, app: w.app, title: w.title, kind, bounds: w.bounds, z: w.z, session: kind === 'terminal' ? sessionForWindow(w, agents) : null };
+    const entry = { wid: w.wid, pid: w.pid, app: w.app, title: w.title, kind, bounds: w.bounds, z: w.z, session: kind === 'terminal' ? sessionForWindow(w, agents) : null };
     if (!bySpace.has(space)) bySpace.set(space, []);
     bySpace.get(space).push(entry);
   }
