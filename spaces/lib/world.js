@@ -41,7 +41,8 @@ let agentsCache = { at: 0, agents: [] };
 /** Agents + sessions from the LAS backend, refreshed every 5 s; colors from the widget's prefs; Space from the tiles file. */
 async function loadAgents(now) {
   if (now - agentsCache.at < 5000) return agentsCache.agents;
-  const registry = (await fetchJson(`${REGISTRY_URL}/agents`)) || {};
+  const registry = await fetchJson(`${REGISTRY_URL}/agents`);
+  if (!registry) { agentsCache.at = now - 3000; return agentsCache.agents; }   // backend slow or down: keep the last good list, retry soon
   const prefs = readJson(PREFS_PATH, {}).agents || {};
   const tiles = readJson(TILES_PATH, { widgets: [] }).widgets || [];
   const agents = [];

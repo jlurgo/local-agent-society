@@ -28,8 +28,10 @@ const post = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 
 
 // ── layout (meters) ────────────────────────────────────────────────────────
 const EYE_Y = 1.25;   // the display's default height; grab it (grip) to put it where you like
-const FLOWER = { z: -1.9, petalR: 0.78, petalROpen: 1.08, bubbleR: 0.12 };
-const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045, MOSAIC_R = 0.66;
+// Everything sits on spheres centered on your head (so "facing you" is the
+// natural orientation): angles are azimuth (+ right) and elevation (+ up).
+const FLOWER = { r: 1.9, spreadAz: 0.42, spreadEl: 0.32, spreadAzOpen: 0.58, spreadElOpen: 0.44, bubbleR: 0.12 };
+const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045, MOSAIC = { r: 1.85, az: 0.36, el: 0.27 };
 const THUMB_W = 400, LIVE_W = 1100, STAGE_W = 1500, STAGE_W_HI = 2400, STAGE_WIDTH_M = 2.0, STAGE_DIST = 1.4;
 
 // ── renderer / scene ───────────────────────────────────────────────────────
@@ -77,6 +79,7 @@ function rebaseToHead() {
   if (!cam || !Number.isFinite(cam.position.y) || cam.position.y === 0) return false;
   headY = cam.position.y;
   root.position.y = (headY - EYE_Y) + ((saved && saved.dy) || 0);
+  flowersLaidOut = false;
   report({ rebase: true, headY: Number(headY.toFixed(2)), rootY: Number(root.position.y.toFixed(2)) });
   return true;
 }
@@ -157,6 +160,14 @@ function disposeObject(o) { o.traverse((c) => { if (c.material) { if (c.material
 // ── the flower: agent bubbles ──────────────────────────────────────────────
 let world = null;
 let selected = null;        // agent name at the center, expanded
+const viewerWorld = new THREE.Vector3();
+const dirFrom = (az, el) => new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
+/** Put obj (in root space) on the sphere of radius r around the viewer, at (az, el), facing the viewer. */
+function place(obj, az, el, r) {
+  obj.position.copy(viewer).addScaledVector(dirFrom(az, el), r / root.scale.x);
+  obj.lookAt(viewerWorld);
+}
+function sphereTarget(az, el, r) { return viewer.clone().addScaledVector(dirFrom(az, el), r / root.scale.x); }
 const flowers = new Map();  // name → { group, sphere, label, agent, target: Vector3, phase, speech }
 const panels = [];          // the selected agent's mosaic: { mesh, label, wid, kind, loading, at }
 const hoverables = [];      // meshes with userData.action
@@ -189,19 +200,19 @@ function makeFlower(agent) {
 function layoutFlower() {
   const names = [...flowers.keys()].sort();
   const petals = names.filter((n) => n !== selected);
-  const r = selected ? FLOWER.petalROpen : FLOWER.petalR;
+  const sa = selected ? FLOWER.spreadAzOpen : FLOWER.spreadAz, se = selected ? FLOWER.spreadElOpen : FLOWER.spreadEl;
   petals.forEach((n, i) => {
     const a = -Math.PI / 2 + (i / petals.length) * Math.PI * 2;   // from the top, clockwise
-    flowers.get(n).target.set(Math.cos(a) * r, EYE_Y + Math.sin(a) * r * 0.78, FLOWER.z);
+    flowers.get(n).target.copy(sphereTarget(Math.cos(a) * sa, -Math.sin(a) * se, FLOWER.r));
   });
   for (const [n, f] of flowers) {
     const isSel = n === selected;
     f.sphere.visible = !isSel; f.label.visible = !isSel;
-    if (isSel) f.target.set(0, EYE_Y + 0.02, FLOWER.z + 0.1);   // the group stays as the anchor for its speech bubble
+    if (isSel) f.target.copy(sphereTarget(0, 0, FLOWER.r - 0.05));   // the group stays as the anchor for its speech bubble
     if (f.title) { f.group.remove(f.title); disposeObject(f.title); const i = hoverables.indexOf(f.title); if (i !== -1) hoverables.splice(i, 1); f.title = null; }
     if (isSel) {
       const title = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.11), new THREE.MeshBasicMaterial({ map: textTexture(n, { width: 1024, height: 128, bg: f.color, fg: ink(f.color), font: 'bold 64px -apple-system, system-ui, sans-serif', align: 'center' }) }));
-      title.position.set(0, MOSAIC_R * 0.72 + PANEL_H / 2 + 0.14, 0);
+      title.position.set(0, FLOWER.r * Math.sin(MOSAIC.el) + PANEL_H / 2 + 0.12, 0);
       title.userData = { action: 'agent', name: n, label: n };
       f.group.add(title); hoverables.push(title); f.title = title;
     }
@@ -221,25 +232,37 @@ function buildMosaic() {
   const wins = agentWindows(f.agent);
   const n = wins.length;
   wins.forEach((win, i) => {
-    const a = -Math.PI / 2 + (i / Math.max(n, 1)) * Math.PI * 2;
-    const rx = n <= 4 ? MOSAIC_R : MOSAIC_R + 0.12, ry = rx * 0.72;
-    const x = Math.cos(a) * rx, y = EYE_Y + 0.02 + Math.sin(a) * ry, z = FLOWER.z + 0.05;
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, PANEL_H), new THREE.MeshBasicMaterial({ color: 0x000000 }));
-    mesh.position.set(x, y, z);
     mesh.userData = { action: 'window', wid: win.wid, label: win.title || win.app, kind: win.kind };
     const labelText = win.session ? `${win.session.runtime} — ${win.title}` : (win.title || win.app);
     const label = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, LABEL_H), new THREE.MeshBasicMaterial({ map: textTexture(labelText, { width: 1024, height: 92, fg: win.kind === 'terminal' ? '#cfe8ff' : '#e8e8e8', font: '30px -apple-system, system-ui, sans-serif' }), transparent: true }));
-    label.position.set(x, y - PANEL_H / 2 - LABEL_H / 2 - 0.005, z);
     root.add(mesh); root.add(label); hoverables.push(mesh);
-    const p = { mesh, label, wid: win.wid, kind: win.kind, loading: false, at: 0 };
+    const p = { mesh, label, wid: win.wid, kind: win.kind, loading: false, at: 0, index: i, count: n };
+    placePanel(p);
     const tt = win.kind === 'terminal' ? termTex.get(win.wid) : null;
     if (tt) applyTexture(mesh, tt.tex, tt.aspect);
     panels.push(p);
   });
 }
 
+/** A mosaic panel on the sphere: a ring around the selected agent, its label just below. */
+function placePanel(p) {
+  const a = -Math.PI / 2 + (p.index / Math.max(p.count, 1)) * Math.PI * 2;
+  const k = p.count <= 4 ? 1 : 1.18;
+  const az = Math.cos(a) * MOSAIC.az * k, el = -Math.sin(a) * MOSAIC.el * k;
+  place(p.mesh, az, el, MOSAIC.r);
+  place(p.label, az, el - (PANEL_H / 2 + LABEL_H / 2 + 0.005) / MOSAIC.r, MOSAIC.r);
+}
+function placeAll() {
+  for (const p of panels) placePanel(p);
+  if (stage && !resizing) { place(stage.mesh, 0, 0, STAGE_DIST); }
+  if (keyboard) { place(keyboard.group, 0, -0.36, STAGE_DIST - 0.1); keyboard.group.rotateX(-0.35); }
+}
+
 function buildWorld() {
   if (!world || !world.displays[0]) return;
+  // An empty agents list is a hiccup (backend slow), never a reason to drop every circle.
+  if (!world.agents.length && flowers.size) return;
   const seen = new Set();
   for (const a of world.agents) {
     seen.add(a.name);
@@ -280,7 +303,6 @@ let stage = null;
 function openStage(panel, label) {
   closeStage();
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M, STAGE_WIDTH_M * 9 / 16), new THREE.MeshBasicMaterial({ color: 0x000000 }));
-  mesh.position.set(0, EYE_Y + 0.02, -STAGE_DIST);
   mesh.userData = { action: 'stage', wid: panel.wid, label, kind: panel.kind };
   const frame = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M + 0.04, STAGE_WIDTH_M * 9 / 16 + 0.04), new THREE.MeshBasicMaterial({ color: 0x8ab4ff }));
   frame.position.z = -0.003; mesh.add(frame);
@@ -297,6 +319,7 @@ function openStage(panel, label) {
   stage = { wid: panel.wid, mesh, handles, kind: panel.kind, loading: false, at: 0, aspectSet: false, focused: false };
   placeHandles();
   buildKeyboard();
+  placeAll();
   const tt = panel.kind === 'terminal' ? termTex.get(panel.wid) : null;
   if (tt) { applyTexture(mesh, tt.tex, tt.aspect, STAGE_WIDTH_M); stage.aspectSet = true; }
 }
@@ -420,6 +443,7 @@ function startGrab(controller) {
 }
 function endGrab(controller) {
   grabs.delete(controller); twoHand = null; resizing = null;
+  flowersLaidOut = false;   // the viewer moved relative to the display: lay it out again around them
   for (const g of grabs.values()) { g.start.setFromMatrixPosition([...grabs.keys()][0].matrixWorld); g.rootStart.copy(root.position); }
   saveRoot();
 }
@@ -517,8 +541,6 @@ function buildKeyboard() {
   });
   keyboard = { group, keys };
   paintKeys();
-  group.position.set(0, EYE_Y - 0.62, -STAGE_DIST + 0.15);
-  group.rotation.x = -0.55;
   root.add(group);
 }
 function paintKeys() {
@@ -565,19 +587,21 @@ function setHovered(obj) {
 
 const clock = new THREE.Clock();
 const viewer = new THREE.Vector3();
+let flowersLaidOut = false;   // layout needs the viewer, known from the first frame on
 let rebaseFrames = 0;
 renderer.setAnimationLoop(() => {
   pollGamepads();
   if (rebase && renderer.xr.isPresenting && ++rebaseFrames > 5 && rebaseToHead()) rebase = false;
   const eye = headY == null ? EYE_Y : headY;
-  viewer.set(0, eye, 0); root.worldToLocal(viewer);   // where the boards turn to face, in root space
+  viewerWorld.set(0, eye, 0); viewer.copy(viewerWorld); root.worldToLocal(viewer);   // the viewer, in root space: everything is placed around it
+  if (!flowersLaidOut) { layoutFlower(); placeAll(); flowersLaidOut = true; }
   updateGrabs();
   const t = clock.getElapsedTime();
   for (const f of flowers.values()) {
     f.group.position.lerp(f.target, 0.08);
     f.group.position.y += Math.sin(t * 1.3 + f.phase) * 0.0025;
     f.sphere.scale.setScalar(THREE.MathUtils.lerp(f.sphere.scale.x, hovered === f.sphere ? 1.12 : 1, 0.2));
-    f.group.lookAt(viewer);
+    f.group.lookAt(viewerWorld);
   }
   let h = null;
   if (renderer.xr.isPresenting) { for (const c of controllers) h = pick(c) || h; }
