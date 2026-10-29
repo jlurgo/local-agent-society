@@ -1562,6 +1562,9 @@ micEl.addEventListener('click', (e) => {
 // the face of the dictation (reportMic above): 'start' as if the mic button
 // had been clicked (never interrupting a recording in flight), 'stop' =
 // stop and send, 'cancel' = stop and throw the audio away.
+// A speech bubble's 🔇, or the bubble being closed: stop what is playing.
+window.las.onSpeechStop(() => stopCurrentSpeech());
+
 window.las.onMicRequest((command) => {
   if (command === 'stop') {
     if (micState === 'listening') stopRecordingAndTranscribe();

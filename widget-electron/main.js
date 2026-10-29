@@ -514,8 +514,14 @@ function createWidgetWindow(name, { forgetPosition = false } = {}) {
 
   // Forward renderer console output to the main process's stdout — handy
   // for headless smoke-testing and debugging; harmless in normal use.
-  win.webContents.on('console-message', (_event, _level, message) => {
+  // Warnings and errors ALSO go to session/widget.log: launched via `open`,
+  // this process's stdout is unreadable, and a renderer exception (e.g. in
+  // the speak chain) otherwise leaves no trace anywhere — a widget just
+  // goes silent (Ops, 2026-10-29: a speak synthesized, never played, no
+  // line explained it).
+  win.webContents.on('console-message', (_event, level, message) => {
     console.log(`[widget:${name}]`, message);
+    if (level >= 2) log[level >= 3 ? 'error' : 'warn']('renderer', `${name}: ${String(message).slice(0, 600)}`);
   });
 
   win.agentName = name;
@@ -1371,33 +1377,46 @@ function maybeBubble(name, win, envelope) {
 }
 
 /** The widget acked its speak turn (queue:ack): show, or forget, its bubble. */
+// las-spaces (spaces/server.js, the headset view) hears the same moments:
+// an agent's words when its voice starts, and when it stops. Fire-and-forget.
+const SPACES_URL = process.env.LAS_SPACES_URL || 'http://127.0.0.1:9002';
+function notifySpaces(body) {
+  fetch(`${SPACES_URL}/speech`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(1500) }).catch(() => {});
+}
+
 function bubbleOnSpeakAck(id, phase, reason, refused) {
+  // The agent stopped talking: its bubble goes (bubbles.js keeps one in use).
+  if (bubbles && (phase === 'done' || (phase === 'skipped' && reason !== 'muted'))) bubbles.speakEnded(id);
+  if (phase === 'done' || phase === 'skipped') { const p = pendingBubbles.get(id) || speakAgents.get(id); if (p) notifySpaces({ agent: p.name, speakId: id, phase: 'ended' }); speakAgents.delete(id); }
   const p = pendingBubbles.get(id);
   if (!p) return;
   const show = !refused && (phase === 'playing' || (phase === 'skipped' && reason === 'muted'));
   if (show || refused || phase === 'done' || phase === 'skipped') pendingBubbles.delete(id);
-  if (show) showBubble(p.name, p.text);
+  if (show) { speakAgents.set(id, { name: p.name }); notifySpaces({ agent: p.name, text: p.text, speakId: id, phase: 'playing' }); showBubble(p.name, p.text, id); }
 }
+const speakAgents = new Map();   // speak id → { name }, while a voice plays
 
-function showBubble(name, text) {
+function showBubble(name, text, speakId = null) {
   const win = windows.get(name);
   if (!bubbles || !win || win.isDestroyed()) return;
   const prefs = getPrefs(name);
-  let side;
+  const bounds = collapsedBounds.get(win) || win.getBounds();
+  const display = screen.getDisplayMatching(bounds);
+  let side = 'right';
+  let onScreen = false;
   const order = spaces.getSpaceOrderForWindow(win);
   if (order) {
-    if (order.index === order.currentIndex) return;   // on screen: the face shows it
+    onScreen = order.index === order.currentIndex;
     side = order.index < order.currentIndex ? 'left' : 'right';
   } else {
-    // No order (API gone, non-macOS): still bubble when known to be
-    // off-Space, or when nothing is known at all — never when known on-Space.
+    // No order (API gone, non-macOS): on-Space only when known for sure.
     const space = spaces.getSpaceForWindow(win);
     const current = space != null ? spaces.getCurrentSpaceForWindow(win) : null;
-    if (space != null && current != null && space === current) return;
-    side = 'right';
+    onScreen = space != null && current != null && space === current;
   }
-  const display = screen.getDisplayMatching(collapsedBounds.get(win) || win.getBounds());
-  bubbles.show({ agentName: name, text, color: prefs.color, opacity: prefs.opacity, side, display });
+  // On the Space being looked at, the bubble pops out of the widget itself
+  // (anchored to its bounds); off-Space, at the screen edge toward its Space.
+  bubbles.show({ agentName: name, text, color: prefs.color, opacity: prefs.opacity, side, display, anchor: onScreen ? bounds : null, speakId });
 }
 
 /** Bring an agent's widget to the user: macOS switches to its Space when
@@ -1421,6 +1440,9 @@ function onBubbleAction(kind, name, payload) {
   const win = windows.get(name);
   if (kind === 'open') {
     focusWidget(name);
+  } else if (kind === 'mute') {
+    // Shut it up: the widget stops the clip it is playing (and acks it skipped).
+    if (win && !win.isDestroyed()) win.webContents.send('speech:stop');
   } else if (kind === 'voice' || kind === 'mic-stop' || kind === 'mic-cancel') {
     // The widget records, transcribes and sends from its own Space, unseen;
     // the bubble shows the phases (mic:status below). No Space switch.

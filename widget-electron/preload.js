@@ -150,6 +150,8 @@ contextBridge.exposeInMainWorld('las', {
    * command 'start' (same as a click on the mic button), 'stop' (stop and
    * send) or 'cancel' (stop, send nothing). */
   onMicRequest: (cb) => ipcRenderer.on('mic:request', (_event, command) => cb(command || 'start')),
+  /** A speech bubble's 🔇 (or closing it): stop the clip this widget is playing. */
+  onSpeechStop: (cb) => ipcRenderer.on('speech:stop', () => cb()),
   /** The phases of this widget's dictation, for the bubble that asked for
    * it: listening / transcribing / sent {text} / failed {error} / cancelled / idle. */
   micStatus: (name, state, detail) => ipcRenderer.send('mic:status', name, state, detail),

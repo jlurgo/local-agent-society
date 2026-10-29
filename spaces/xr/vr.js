@@ -1,17 +1,19 @@
 // LAS Spaces — the immersive view (WebXR + three.js). See
-// docs/plans/2026-10-29-quest-spaces.md, "The workspace view".
+// docs/plans/2026-10-29-quest-spaces.md.
 //
-// This is a view of the LAS AGENTS, not a remote control for the Mac. Each
-// agent is a BOARD: its name in its color over its windows — the terminals
-// of its sessions first, then the other terminals and the browser windows
-// on its Space (tabs come with the extension). Boards stand on a RING
-// around you; the SELECTED agent stands big in the middle, the others
-// smaller around it, and the thumbstick scrolls the ring. Trigger on a
-// board's header selects that agent (nothing happens on the Mac). Trigger
-// on a terminal or browser panel puts it on the STAGE, big, and focuses
-// that window on the Mac — so the physical keyboard types into it. The
-// stage and the pointed panel are live. Outside VR the same scene renders
-// flat (a mouse works), which is how it is debugged from the Mac.
+// A view of the LAS AGENTS: each agent is a BUBBLE (a sphere in its color
+// with its name) and the bubbles float in front of you like a flower —
+// the SELECTED agent at the center, the others as petals around it.
+// Selecting an agent (trigger on its bubble) moves it to the center and
+// EXPANDS it: its windows — the terminals of its sessions first, then the
+// other terminals and the browser windows on its Space — form a MOSAIC of
+// panels around it (terminals are live text, browsers live pixels).
+// Trigger on a panel puts it on the STAGE, big, and focuses that window on
+// the Mac so you can type into it (physical keyboard now; pointer and a
+// virtual keyboard next). When an agent speaks, a SPEECH BUBBLE with its
+// words rises from its sphere while the voice plays (fed by the widget
+// app through the server's /speech). Outside VR the same scene renders
+// flat with a mouse, which is how it is checked from the Mac.
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 
@@ -19,14 +21,13 @@ const hud = document.getElementById('hud');
 const report = (data) => fetch('/hello', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ t: Date.now(), vr: true, ...data }) }).catch(() => {});
 window.addEventListener('error', (e) => report({ error: String(e.message), at: `${e.filename}:${e.lineno}` }));
 window.addEventListener('unhandledrejection', (e) => report({ error: 'unhandled: ' + String(e.reason && e.reason.message || e.reason) }));
-const post = (p) => fetch(p, { method: 'POST' }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));
+const post = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));
 
-// ── layout constants (meters) ──────────────────────────────────────────────
-const PANEL_W = 0.56, PANEL_H = PANEL_W * 9 / 16, PANEL_GAP = 0.05, LABEL_H = 0.05;
-const COLS = 2, BOARD_PAD = 0.06, HEADER_H = 0.11;
-const EYE_Y = 1.5;
-const THUMB_W = 400, LIVE_W = 1100, STAGE_W = 1500;
-const STAGE_WIDTH_M = 1.7, STAGE_DIST = 1.7;
+// ── layout (meters) ────────────────────────────────────────────────────────
+const EYE_Y = 1.45;
+const FLOWER = { z: -1.9, petalR: 0.78, petalROpen: 1.08, bubbleR: 0.12 };
+const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045, MOSAIC_R = 0.66;
+const THUMB_W = 400, LIVE_W = 1100, STAGE_W = 1500, STAGE_WIDTH_M = 1.6, STAGE_DIST = 1.35;
 
 // ── renderer / scene ───────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -37,13 +38,14 @@ renderer.xr.setReferenceSpaceType('local-floor');
 document.body.appendChild(renderer.domElement);
 document.body.appendChild(VRButton.createButton(renderer));
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x101014);
+scene.background = new THREE.Color(0x0f0f14);
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 60);
 camera.position.set(0, EYE_Y, 0);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x303040, 1.0));
-const floor = new THREE.Mesh(new THREE.CircleGeometry(6, 48), new THREE.MeshBasicMaterial({ color: 0x16161c }));
+scene.add(new THREE.HemisphereLight(0xffffff, 0x303040, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 0.8); sun.position.set(1, 3, 2); scene.add(sun);
+const floor = new THREE.Mesh(new THREE.CircleGeometry(6, 48), new THREE.MeshBasicMaterial({ color: 0x14141a }));
 floor.rotation.x = -Math.PI / 2; scene.add(floor);
-const grid = new THREE.GridHelper(12, 24, 0x2a2a34, 0x202028); grid.position.y = 0.001; scene.add(grid);
+const grid = new THREE.GridHelper(12, 24, 0x262630, 0x1c1c24); grid.position.y = 0.001; scene.add(grid);
 window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
 
 // ── text as textures ───────────────────────────────────────────────────────
@@ -58,14 +60,29 @@ function textTexture(text, { width = 512, height = 64, bg = 'rgba(0,0,0,0)', fg 
   const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter;
   return tex;
 }
+/** A speech bubble: wrapped text in the agent's color with a tail at the bottom. Returns { tex, aspect }. */
+function bubbleTexture(text, color) {
+  const W = 768, pad = 28, font = 30, lineH = 38, maxLines = 7;
+  const c = document.createElement('canvas'); const g = c.getContext('2d');
+  g.font = `${font}px -apple-system, system-ui, sans-serif`;
+  const words = String(text).split(/\s+/), lines = []; let cur = '';
+  for (const w of words) { const t = cur ? cur + ' ' + w : w; if (g.measureText(t).width > W - 2 * pad && cur) { lines.push(cur); cur = w; } else cur = t; }
+  if (cur) lines.push(cur);
+  if (lines.length > maxLines) { lines.length = maxLines; lines[maxLines - 1] = lines[maxLines - 1].replace(/.{3}$/, '…'); }
+  const H = pad * 2 + lines.length * lineH + 30;
+  c.width = W; c.height = H;
+  g.fillStyle = color; roundRect(g, 0, 0, W, H - 30, 26); g.fill();
+  g.beginPath(); g.moveTo(W / 2 - 22, H - 32); g.lineTo(W / 2, H); g.lineTo(W / 2 + 22, H - 32); g.closePath(); g.fill();
+  g.fillStyle = ink(color); g.font = `${font}px -apple-system, system-ui, sans-serif`; g.textBaseline = 'top';
+  lines.forEach((l, i) => g.fillText(l, pad, pad + i * lineH));
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter;
+  return { tex, aspect: W / H };
+}
+function roundRect(g, x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
 const ink = (hex) => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || ''); if (!m) return '#141414'; const [r, g, b] = [m[1], m[2], m[3]].map((h) => parseInt(h, 16) / 255); return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.45 ? '#f4f4f4' : '#141414'; };
 
 // ── terminal text → texture ────────────────────────────────────────────────
-// A terminal panel is its screen text (server /ws {type:'text'}), drawn in a
-// monospace font on a canvas sized to its rows×cols, so it is crisp on the
-// stage and cheap everywhere. One texture per window, shared by its panel
-// and the stage; redrawn only when the text changes.
-const termTex = new Map();   // wid → { tex, canvas, rows, cols, aspect }
+const termTex = new Map();   // wid → { tex, canvas, aspect }
 function drawTerminal(wid, { rows, cols, text }) {
   rows = Math.max(1, rows || 24); cols = Math.max(1, cols || 80);
   const charW = Math.min(9, Math.floor(2048 / cols)), fontPx = Math.round(charW / 0.6), lineH = Math.round(fontPx * 1.22);
@@ -75,8 +92,8 @@ function drawTerminal(wid, { rows, cols, text }) {
     const canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H;
     const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearMipmapLinearFilter; tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     if (t) t.tex.dispose();
-    t = { tex, canvas, rows, cols, aspect: W / H }; termTex.set(wid, t);
-    for (const b of boards) for (const p of b.panels) if (p.wid === wid) applyTexture(p.mesh, tex, t.aspect);
+    t = { tex, canvas, aspect: W / H }; termTex.set(wid, t);
+    for (const p of panels) if (p.wid === wid) applyTexture(p.mesh, tex, t.aspect);
     if (stage && stage.wid === wid) applyTexture(stage.mesh, tex, t.aspect, STAGE_WIDTH_M);
   }
   const g = t.canvas.getContext('2d');
@@ -88,135 +105,134 @@ function drawTerminal(wid, { rows, cols, text }) {
 }
 function applyTexture(mesh, tex, aspect, width = null) {
   mesh.material.map = tex; mesh.material.color.set(0xffffff); mesh.material.needsUpdate = true;
-  if (width) {   // the stage takes the texture's real aspect
+  if (width) {
     const h = width / aspect;
     mesh.geometry.dispose(); mesh.geometry = new THREE.PlaneGeometry(width, h);
     if (mesh.children[0]) { mesh.children[0].geometry.dispose(); mesh.children[0].geometry = new THREE.PlaneGeometry(width + 0.04, h + 0.04); }
     if (mesh.children[1]) mesh.children[1].position.y = h / 2 + 0.05;
   }
 }
+function disposeObject(o) { o.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } if (c.geometry) c.geometry.dispose(); }); }
 
-// ── boards ─────────────────────────────────────────────────────────────────
+// ── the flower: agent bubbles ──────────────────────────────────────────────
 let world = null;
-let focusedSpace = null;    // the selected agent's Space: its board is big in the middle (default: the Mac's current one)
-let ringOffset = 0;         // thumbstick / arrow keys turn the ring
-const boards = [];          // { group, space, header, panels: [{ mesh, wid, tex, title }] }
+let selected = null;        // agent name at the center, expanded
+const flowers = new Map();  // name → { group, sphere, label, agent, target: Vector3, phase, speech }
+const panels = [];          // the selected agent's mosaic: { mesh, label, wid, kind, loading, at }
 const hoverables = [];      // meshes with userData.action
 let hovered = null;
 
-function clearBoards() {
-  for (const b of boards) {
-    scene.remove(b.group);
-    b.group.traverse((o) => { if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); } if (o.geometry) o.geometry.dispose(); });
-  }
-  boards.length = 0; hoverables.length = 0; hovered = null;
+function agentWindows(agent) {
+  if (!world || !agent.space) return [];
+  const space = world.displays[0].spaces.find((s) => s.id === agent.space);
+  if (!space) return [];
+  const terms = space.windows.filter((w) => w.kind === 'terminal');
+  return [...terms.filter((w) => w.session), ...terms.filter((w) => !w.session), ...space.windows.filter((w) => w.kind === 'browser')].slice(0, 10);
 }
 
-function makeBoard(space, agents) {
-  const terms = space.windows.filter((w) => w.kind === 'terminal');
-  const wins = [...terms.filter((w) => w.session), ...terms.filter((w) => !w.session), ...space.windows.filter((w) => w.kind === 'browser')].slice(0, 8);
-  const rows = Math.max(1, Math.ceil(wins.length / COLS));
-  const w = BOARD_PAD * 2 + COLS * PANEL_W + (COLS - 1) * PANEL_GAP;
-  const h = BOARD_PAD * 2 + HEADER_H + rows * (PANEL_H + LABEL_H + PANEL_GAP);
+function makeFlower(agent) {
+  const color = new THREE.Color(agent.color || '#90c060');
   const group = new THREE.Group();
-  const back = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: space.current ? 0x1d2a44 : 0x1c1c22 }));
-  group.add(back);
-  const agent = agents[space.agents[0]] || null;
-  const color = agent && agent.color ? agent.color : '#3a3a44';
-  const headerTex = textTexture(space.agents.join(' · '), { width: 768, height: 96, bg: color, fg: ink(color), font: 'bold 44px -apple-system, system-ui, sans-serif', align: 'center' });
-  const header = new THREE.Mesh(new THREE.PlaneGeometry(w - BOARD_PAD * 2, HEADER_H), new THREE.MeshBasicMaterial({ map: headerTex }));
-  header.position.set(0, h / 2 - BOARD_PAD - HEADER_H / 2, 0.003);
-  header.userData = { action: 'space', space: space.id, label: space.agents.join(' · ') };
-  group.add(header); hoverables.push(header);
-  const panels = [];
+  const sphere = new THREE.Mesh(new THREE.SphereGeometry(FLOWER.bubbleR, 32, 24), new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.05, emissive: color, emissiveIntensity: 0.18 }));
+  sphere.userData = { action: 'agent', name: agent.name, label: agent.name };
+  group.add(sphere); hoverables.push(sphere);
+  const label = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(agent.name, { width: 512, height: 84, fg: '#fff', font: 'bold 44px -apple-system, system-ui, sans-serif', align: 'center' }), transparent: true }));
+  label.position.y = -FLOWER.bubbleR - 0.06;
+  group.add(label);
+  const f = { group, sphere, label, agent, target: new THREE.Vector3(), phase: Math.random() * Math.PI * 2, speech: null };
+  flowers.set(agent.name, f);
+  scene.add(group);
+  return f;
+}
+
+function layoutFlower() {
+  const names = [...flowers.keys()].sort();
+  const petals = names.filter((n) => n !== selected);
+  const r = selected ? FLOWER.petalROpen : FLOWER.petalR;
+  petals.forEach((n, i) => {
+    const a = -Math.PI / 2 + (i / petals.length) * Math.PI * 2;   // from the top, clockwise
+    flowers.get(n).target.set(Math.cos(a) * r, EYE_Y + Math.sin(a) * r * 0.78, FLOWER.z);
+  });
+  if (selected && flowers.has(selected)) flowers.get(selected).target.set(0, EYE_Y + 0.02, FLOWER.z + 0.1);
+}
+
+function clearPanels() {
+  for (const p of panels) { scene.remove(p.mesh); scene.remove(p.label); disposeObject(p.mesh); disposeObject(p.label); const i = hoverables.indexOf(p.mesh); if (i !== -1) hoverables.splice(i, 1); }
+  panels.length = 0;
+}
+
+/** The selected agent's windows as a mosaic ring around its bubble. */
+function buildMosaic() {
+  clearPanels();
+  const f = selected && flowers.get(selected);
+  if (!f) return;
+  const wins = agentWindows(f.agent);
+  const n = wins.length;
   wins.forEach((win, i) => {
-    const col = i % COLS, row = Math.floor(i / COLS);
-    const x = -w / 2 + BOARD_PAD + PANEL_W / 2 + col * (PANEL_W + PANEL_GAP);
-    const y = h / 2 - BOARD_PAD - HEADER_H - PANEL_GAP - PANEL_H / 2 - row * (PANEL_H + LABEL_H + PANEL_GAP);
-    const mat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, PANEL_H), mat);
-    mesh.position.set(x, y, 0.004);
+    const a = -Math.PI / 2 + (i / Math.max(n, 1)) * Math.PI * 2;
+    const rx = n <= 4 ? MOSAIC_R : MOSAIC_R + 0.12, ry = rx * 0.72;
+    const x = Math.cos(a) * rx, y = EYE_Y + 0.02 + Math.sin(a) * ry, z = FLOWER.z + 0.05;
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, PANEL_H), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+    mesh.position.set(x, y, z);
     mesh.userData = { action: 'window', wid: win.wid, label: win.title || win.app, kind: win.kind };
-    group.add(mesh); hoverables.push(mesh);
+    const labelText = win.session ? `${win.session.runtime} — ${win.title}` : (win.title || win.app);
+    const label = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, LABEL_H), new THREE.MeshBasicMaterial({ map: textTexture(labelText, { width: 1024, height: 92, fg: win.kind === 'terminal' ? '#cfe8ff' : '#e8e8e8', font: '30px -apple-system, system-ui, sans-serif' }), transparent: true }));
+    label.position.set(x, y - PANEL_H / 2 - LABEL_H / 2 - 0.005, z);
+    scene.add(mesh); scene.add(label); hoverables.push(mesh);
+    const p = { mesh, label, wid: win.wid, kind: win.kind, loading: false, at: 0 };
     const tt = win.kind === 'terminal' ? termTex.get(win.wid) : null;
     if (tt) applyTexture(mesh, tt.tex, tt.aspect);
-    const labelText = win.session ? `${win.session.agent} · ${win.session.runtime} — ${win.title}` : (win.title || win.app);
-    const label = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, LABEL_H), new THREE.MeshBasicMaterial({ map: textTexture(labelText, { width: 1024, height: 92, fg: win.kind === 'terminal' ? '#cfe8ff' : '#e8e8e8', font: '30px -apple-system, system-ui, sans-serif' }), transparent: true }));
-    label.position.set(x, y - PANEL_H / 2 - LABEL_H / 2 - 0.005, 0.004);
-    group.add(label);
-    panels.push({ mesh, wid: win.wid, kind: win.kind, loading: false, at: 0 });
-  });
-  const b = { group, space, w, h, panels };
-  boards.push(b);
-  scene.add(group);
-  return b;
-}
-
-function placeBoards() {
-  const n = boards.length;
-  if (!n) return;
-  if (false) {   // (the wall layout is retired: the ring is the view)
-    const cols = Math.min(4, n), colW = Math.max(...boards.map((b) => b.w)) + 0.12;
-    const rowsH = [];
-    boards.forEach((b, i) => { const r = Math.floor(i / cols); rowsH[r] = Math.max(rowsH[r] || 0, b.h); });
-    let y = EYE_Y + 0.4;
-    boards.forEach((b, i) => {
-      const c = i % cols, r = Math.floor(i / cols);
-      if (c === 0 && r > 0) y -= rowsH[r - 1] / 2 + rowsH[r] / 2 + 0.1;
-      b.group.position.set((c - (cols - 1) / 2) * colW, y, -2.6);
-      b.group.rotation.set(0, 0, 0);
-      b.group.scale.setScalar(1);
-    });
-    return;
-  }
-  // ring: one big board in the middle (the focused Space — the Mac's current
-  // one until you pick another), the others smaller on an arc around it, in
-  // Mission Control order; the whole ring turns with the thumbstick.
-  let cur = boards.findIndex((b) => b.space.id === focusedSpace);
-  if (cur === -1) cur = Math.max(0, boards.findIndex((b) => b.space.current));
-  const step = Math.max(...boards.map((b) => b.w)) * 0.72 + 0.14;
-  const radius = Math.max(2.6, (n * step) / (2 * Math.PI) * 1.3);
-  const dAngle = step / radius;
-  boards.forEach((b, i) => {
-    const focused = i === cur;
-    const a = (i - cur) * dAngle + ringOffset;   // + to the right
-    const r = focused ? 1.9 : radius;
-    const sc = focused ? 1.35 : 0.72;
-    b.group.position.set(Math.sin(a) * r, EYE_Y + (focused ? 0.1 : 0.25), -Math.cos(a) * r);
-    b.group.scale.setScalar(sc);
-    b.group.lookAt(0, b.group.position.y, 0);
-    b.group.children[0].material.color.set(focused ? 0x1d2a44 : b.space.current ? 0x22304a : 0x1c1c22);
+    panels.push(p);
   });
 }
 
 function buildWorld() {
-  clearBoards();
   if (!world || !world.displays[0]) return;
-  const agents = Object.fromEntries(world.agents.map((a) => [a.name, a]));
-  for (const s of world.displays[0].spaces) if (s.agents.length) makeBoard(s, agents);   // agents only
-  if (!focusedSpace || !boards.some((b) => b.space.id === focusedSpace)) { const c = world.displays[0].spaces.find((s) => s.current); focusedSpace = c ? c.id : null; }
-  placeBoards();
-  if (stage && !boards.some((b) => b.panels.some((p) => p.wid === stage.wid))) closeStage();
-  hud.textContent = `LAS Spaces — ${boards.length} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · header: select · panel: open big + type into it · stick: scroll · A/B: close`;
+  const seen = new Set();
+  for (const a of world.agents) {
+    seen.add(a.name);
+    const f = flowers.get(a.name);
+    if (f) { f.agent = a; } else makeFlower(a);
+  }
+  for (const [name, f] of flowers) if (!seen.has(name)) { scene.remove(f.group); disposeObject(f.group); const i = hoverables.indexOf(f.sphere); if (i !== -1) hoverables.splice(i, 1); flowers.delete(name); }
+  if (selected && !flowers.has(selected)) selected = null;
+  layoutFlower();
+  buildMosaic();
+  if (stage && !panels.some((p) => p.wid === stage.wid)) closeStage();
+  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · bubble: select · panel: open big + type into it · A/B: close`;
 }
 
-// ── the stage: one window, big and live, in front of you ────────────────────
-// Trigger on a panel: the Mac focuses that window (your keyboard goes there)
-// and it opens here at STAGE_W px, refreshed as fast as the server captures.
-// Trigger on the stage, or B/Y, closes it. Pointer input INTO it is a later
-// phase (plan: phase 6).
+function select(name) {
+  selected = selected === name ? null : name;
+  closeStage();
+  layoutFlower();
+  buildMosaic();
+}
+
+// ── speech bubbles from the agents ─────────────────────────────────────────
+function speech(agentName, text, phase) {
+  const f = flowers.get(agentName);
+  if (!f) return;
+  if (f.speech) { f.group.remove(f.speech); disposeObject(f.speech); f.speech = null; }
+  if (phase !== 'playing') return;
+  const { tex, aspect } = bubbleTexture(text, f.agent.color || '#90c060');
+  const w = 0.6, h = w / aspect;
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+  mesh.position.set(0, FLOWER.bubbleR + h / 2 + 0.04, 0.02);
+  f.group.add(mesh); f.speech = mesh;
+}
+
+// ── the stage: one window, big, in front ───────────────────────────────────
 let stage = null;
 function openStage(panel, label) {
   closeStage();
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M, STAGE_WIDTH_M * 9 / 16), new THREE.MeshBasicMaterial({ color: 0x000000 }));
-  mesh.position.set(0, EYE_Y + 0.05, -STAGE_DIST);
-  mesh.userData = { action: 'stage', wid: panel.wid, label };
+  mesh.position.set(0, EYE_Y + 0.02, -STAGE_DIST);
+  mesh.userData = { action: 'stage', wid: panel.wid, label, kind: panel.kind };
   const frame = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M + 0.04, STAGE_WIDTH_M * 9 / 16 + 0.04), new THREE.MeshBasicMaterial({ color: 0x8ab4ff }));
-  frame.position.z = -0.003;
-  mesh.add(frame);
+  frame.position.z = -0.003; mesh.add(frame);
   const title = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(label, { width: 1536, height: 64, font: '34px -apple-system, system-ui, sans-serif', fg: '#fff' }), transparent: true }));
-  title.position.y = STAGE_WIDTH_M * 9 / 32 + 0.05;
-  mesh.add(title);
+  title.position.y = STAGE_WIDTH_M * 9 / 32 + 0.05; mesh.add(title);
   scene.add(mesh); hoverables.push(mesh);
   stage = { wid: panel.wid, mesh, kind: panel.kind, loading: false, at: 0, aspectSet: false };
   const tt = panel.kind === 'terminal' ? termTex.get(panel.wid) : null;
@@ -226,33 +242,25 @@ function closeStage() {
   if (!stage) return;
   scene.remove(stage.mesh);
   const i = hoverables.indexOf(stage.mesh); if (i !== -1) hoverables.splice(i, 1);
-  stage.mesh.traverse((o) => { if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); } if (o.geometry) o.geometry.dispose(); });
+  disposeObject(stage.mesh);
   if (hovered === stage.mesh) setHovered(null);
   stage = null;
 }
+const loader = new THREE.TextureLoader();
 function refreshStage() {
   if (!stage || stage.loading || performance.now() - stage.at < 200) return;
-  if (stage.kind === 'terminal' && termTex.has(stage.wid)) return;   // text: already live
+  if (stage.kind === 'terminal' && termTex.has(stage.wid)) return;
   const st = stage; st.loading = true;
   loader.load(`/thumb/${st.wid}?w=${STAGE_W}&live=1&t=${Date.now()}`, (tex) => {
     if (stage !== st) { tex.dispose(); return; }
     tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
     const old = st.mesh.material.map;
-    st.mesh.material.map = tex; st.mesh.material.color.set(0xffffff); st.mesh.material.needsUpdate = true;
-    if (old) old.dispose();
-    if (!st.aspectSet && tex.image && tex.image.width) {   // the real window's aspect, once
-      st.aspectSet = true;
-      const h = STAGE_WIDTH_M * tex.image.height / tex.image.width;
-      st.mesh.geometry.dispose(); st.mesh.geometry = new THREE.PlaneGeometry(STAGE_WIDTH_M, h);
-      st.mesh.children[0].geometry.dispose(); st.mesh.children[0].geometry = new THREE.PlaneGeometry(STAGE_WIDTH_M + 0.04, h + 0.04);
-      st.mesh.children[1].position.y = h / 2 + 0.05;
-    }
+    if (!st.aspectSet && tex.image && tex.image.width) { st.aspectSet = true; applyTexture(st.mesh, tex, tex.image.width / tex.image.height, STAGE_WIDTH_M); }
+    else { st.mesh.material.map = tex; st.mesh.material.color.set(0xffffff); st.mesh.material.needsUpdate = true; }
+    if (old && old !== tex) old.dispose();
     st.loading = false; st.at = performance.now();
   }, undefined, () => { st.loading = false; st.at = performance.now(); });
 }
-
-// ── textures: every panel every ~3 s, the pointed one live ─────────────────
-const loader = new THREE.TextureLoader();
 function refresh(panel, live) {
   if (panel.loading) return;
   panel.loading = true;
@@ -264,20 +272,13 @@ function refresh(panel, live) {
     panel.loading = false; panel.at = performance.now();
   }, undefined, () => { panel.loading = false; panel.at = performance.now(); });
 }
-// Refresh budget (the Mac pays for every capture): the pointed panel and the
-// stage live; the focused board's panels every 3 s; every other board's
-// every 12 s, and only while its panels can be seen.
 setInterval(() => {
   refreshStage();
   const now = performance.now();
-  for (const b of boards) {
-    const focused = b.space.id === focusedSpace;
-    for (const p of b.panels) {
-      if (p.kind === 'terminal' && termTex.has(p.wid)) continue;   // text, pushed by the server — never captured
-      const live = hovered && hovered.userData.wid === p.wid;
-      const every = live ? 350 : focused ? 3000 : 12000;
-      if (now - p.at > every) refresh(p, live);
-    }
+  for (const p of panels) {
+    if (p.kind === 'terminal' && termTex.has(p.wid)) continue;
+    const live = hovered && hovered.userData.wid === p.wid;
+    if (now - p.at > (live ? 350 : 3000)) refresh(p, live);
   }
 }, 200);
 
@@ -303,42 +304,28 @@ function pick(controller) {
 }
 const mouse = new THREE.Vector2(-2, -2);
 window.addEventListener('pointermove', (e) => { mouse.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1); });
-window.addEventListener('click', (e) => { if (renderer.xr.isPresenting) return; raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; act(hit ? hit.object : null); });
+window.addEventListener('click', () => { if (renderer.xr.isPresenting) return; raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; act(hit ? hit.object : null); });
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeStage(); });
 
 let busy = false;
 async function act(obj) {
   if (!obj || busy) return;
   const u = obj.userData;
   if (u.action === 'stage') { closeStage(); return; }
+  if (u.action === 'agent') { select(u.name); report({ act: 'select', label: u.name }); return; }
   busy = true;
-  let r;
-  if (u.action === 'window') {
-    const panel = boards.flatMap((b) => b.panels).find((p) => p.wid === u.wid);
-    if (panel) openStage(panel, u.label);
-    r = await post(`/window/${u.wid}/focus`);
-  } else {
-    focusedSpace = u.space; ringOffset = 0; placeBoards();   // selected: big in the middle; the Mac is left alone
-    r = { ok: true, selected: u.label };
-  }
-  report({ act: u.action, label: u.label, result: r });
+  const panel = panels.find((p) => p.wid === u.wid);
+  if (panel) openStage(panel, u.label);
+  const r = await post(`/window/${u.wid}/focus`);
+  report({ act: 'open', label: u.label, result: r });
   busy = false;
 }
-window.addEventListener('keydown', (e) => {
-  if (e.key === 'ArrowLeft') { ringOffset += 0.12; placeBoards(); }
-  if (e.key === 'ArrowRight') { ringOffset -= 0.12; placeBoards(); }
-  if (e.key === 'Escape') closeStage();
-});
-// Thumbstick scrolls the ring; A/X or B/Y closes the stage.
 const padState = new Map();
-let lastTick = performance.now();
 function pollGamepads() {
-  const now = performance.now(), dt = Math.min(0.1, (now - lastTick) / 1000); lastTick = now;
   const session = renderer.xr.getSession();
   if (!session) return;
   for (const src of session.inputSources) {
     const gp = src.gamepad; if (!gp) continue;
-    const x = gp.axes[2] || 0;
-    if (Math.abs(x) > 0.25) { ringOffset -= x * dt * 1.6; placeBoards(); }
     const prev = padState.get(src) || {};
     const b4 = gp.buttons[4] && gp.buttons[4].pressed, b5 = gp.buttons[5] && gp.buttons[5].pressed;
     if ((b4 && !prev.b4) || (b5 && !prev.b5)) closeStage();
@@ -348,7 +335,7 @@ function pollGamepads() {
 
 function setHovered(obj) {
   hovered = obj;
-  if (!obj) { highlight.visible = false; return; }
+  if (!obj || !obj.geometry.parameters.width) { highlight.visible = false; if (obj) obj.scale.setScalar(1.12); return; }
   const g = obj.geometry.parameters;
   highlight.scale.set(g.width + 0.03, g.height + 0.03, 1);
   obj.getWorldPosition(highlight.position); obj.getWorldQuaternion(highlight.quaternion);
@@ -356,10 +343,19 @@ function setHovered(obj) {
   highlight.visible = true;
 }
 
+const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   pollGamepads();
+  const t = clock.getElapsedTime();
+  for (const f of flowers.values()) {
+    f.group.position.lerp(f.target, 0.08);
+    f.group.position.y += Math.sin(t * 1.3 + f.phase) * 0.0025;
+    const s = f.agent.name === selected ? 1.35 : 1;
+    f.sphere.scale.setScalar(THREE.MathUtils.lerp(f.sphere.scale.x, hovered === f.sphere ? s * 1.12 : s, 0.2));
+    f.group.lookAt(0, EYE_Y, 0);
+  }
   let h = null;
-  if (renderer.xr.isPresenting) { for (const c of controllers) { h = pick(c) || h; } }
+  if (renderer.xr.isPresenting) { for (const c of controllers) h = pick(c) || h; }
   else { raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; h = hit ? hit.object : null; }
   if (h !== hovered) setHovered(h);
   renderer.render(scene, camera);
@@ -371,7 +367,12 @@ renderer.xr.addEventListener('sessionend', () => { report({ sessionEnded: true }
 fetch('/world').then((r) => r.json()).then((w) => { world = w; buildWorld(); }).catch(() => {});
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.type === 'world') { world = d.world; buildWorld(); } else if (d.type === 'text') drawTerminal(d.wid, d); };
+  ws.onmessage = (m) => {
+    const d = JSON.parse(m.data);
+    if (d.type === 'world') { world = d.world; buildWorld(); }
+    else if (d.type === 'text') drawTerminal(d.wid, d);
+    else if (d.type === 'speech') speech(d.agent, d.text, d.phase);
+  };
   ws.onclose = () => setTimeout(connect, 2000);
 }
 connect();

@@ -242,6 +242,17 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'POST' && (m = /^\/space\/(\d+)\/activate$/.exec(p))) return json(res, 200, await activateSpace(m[1]));
   if (req.method === 'POST' && (m = /^\/window\/(\d+)\/focus$/.exec(p))) return json(res, 200, await focusWindow(Number(m[1])));
+  // The widget app tells us when an agent starts/stops talking (main.js
+  // notifySpaces): the immersive view raises a speech bubble from that agent.
+  if (req.method === 'POST' && p === '/speech') {
+    let body = {};
+    try { body = JSON.parse(await readBody(req) || '{}'); } catch { /* ignore */ }
+    if (body && body.agent && body.phase) {
+      broadcast({ type: 'speech', agent: String(body.agent), text: String(body.text || ''), phase: String(body.phase), speakId: body.speakId || null });
+      info('speech', `${body.agent}: ${body.phase}${body.text ? ` (${String(body.text).length} chars)` : ''}`);
+    }
+    return res.writeHead(204).end();
+  }
   if (req.method === 'POST' && p === '/hello') {
     info('hello', (await readBody(req)).replace(/\s+/g, ' ').slice(0, 1000));
     return res.writeHead(204).end();
