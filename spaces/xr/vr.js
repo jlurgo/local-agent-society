@@ -60,8 +60,26 @@ camera.position.set(0, EYE_Y, 0);
 // scale it; where you leave it is remembered.
 const root = new THREE.Group();
 scene.add(root);
-try { const saved = JSON.parse(localStorage.getItem('las-spaces-root') || 'null'); if (saved) { root.position.fromArray(saved.p); root.scale.setScalar(saved.s || 1); } } catch { /* fresh */ }
-const saveRoot = () => { try { localStorage.setItem('las-spaces-root', JSON.stringify({ p: root.position.toArray(), s: root.scale.x })); } catch { /* ignore */ } };
+// The display is placed relative to YOUR HEAD, not to a floor: in an AR
+// session the browser may not grant a floor-based reference space, and then
+// the origin is at eye level — content put at "1.25 m" hung 1.25 m above
+// the head. On session start the head height is read and the display is
+// based on it (EYE_Y is then "where the eyes are"); the saved placement is
+// stored relative to the head too.
+let headY = null, rebase = false;
+let saved = null;
+try { saved = JSON.parse(localStorage.getItem('las-spaces-root') || 'null'); } catch { saved = null; }
+if (saved && saved.s) root.scale.setScalar(saved.s);
+if (saved && saved.dx !== undefined) root.position.set(saved.dx, 0, saved.dz);
+const saveRoot = () => { try { localStorage.setItem('las-spaces-root', JSON.stringify({ dx: root.position.x, dy: headY == null ? 0 : root.position.y - (headY - EYE_Y), dz: root.position.z, s: root.scale.x })); } catch { /* ignore */ } };
+function rebaseToHead() {
+  const cam = renderer.xr.getCamera();
+  if (!cam || !Number.isFinite(cam.position.y) || cam.position.y === 0) return false;
+  headY = cam.position.y;
+  root.position.y = (headY - EYE_Y) + ((saved && saved.dy) || 0);
+  report({ rebase: true, headY: Number(headY.toFixed(2)), rootY: Number(root.position.y.toFixed(2)) });
+  return true;
+}
 scene.add(new THREE.HemisphereLight(0xffffff, 0x303040, 1.1));
 const sun = new THREE.DirectionalLight(0xffffff, 0.8); sun.position.set(1, 3, 2); scene.add(sun);
 const floor = new THREE.Mesh(new THREE.CircleGeometry(6, 48), new THREE.MeshBasicMaterial({ color: 0x14141a }));
@@ -547,9 +565,12 @@ function setHovered(obj) {
 
 const clock = new THREE.Clock();
 const viewer = new THREE.Vector3();
+let rebaseFrames = 0;
 renderer.setAnimationLoop(() => {
   pollGamepads();
-  viewer.set(0, EYE_Y, 0); root.worldToLocal(viewer);   // where the boards turn to face, in root space
+  if (rebase && renderer.xr.isPresenting && ++rebaseFrames > 5 && rebaseToHead()) rebase = false;
+  const eye = headY == null ? EYE_Y : headY;
+  viewer.set(0, eye, 0); root.worldToLocal(viewer);   // where the boards turn to face, in root space
   updateGrabs();
   const t = clock.getElapsedTime();
   for (const f of flowers.values()) {
@@ -564,8 +585,8 @@ renderer.setAnimationLoop(() => {
   if (h !== hovered) setHovered(h);
   renderer.render(scene, camera);
 });
-renderer.xr.addEventListener('sessionstart', () => { report({ sessionStarted: true }); buildWorld(); });
-renderer.xr.addEventListener('sessionend', () => { report({ sessionEnded: true }); buildWorld(); });
+renderer.xr.addEventListener('sessionstart', () => { report({ sessionStarted: true }); rebase = true; rebaseFrames = 0; buildWorld(); });
+renderer.xr.addEventListener('sessionend', () => { report({ sessionEnded: true }); headY = null; root.position.y = 0; buildWorld(); });
 
 // ── the world: first over HTTP, then live over the socket ──────────────────
 fetch('/world').then((r) => r.json()).then((w) => { world = w; buildWorld(); }).catch(() => {});
