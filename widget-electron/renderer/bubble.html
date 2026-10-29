@@ -62,6 +62,10 @@
       transition: opacity 140ms ease-out;
     }
     .card:hover .circles, body.replying .circles { opacity: 1; }
+    /* 🔇 is the one circle that is always there: the point of it is speed. */
+    .circles { opacity: 1; }
+    .circles .circle:not(.always) { opacity: 0; transition: opacity 140ms ease-out; }   /* a class, not the id: #mute would outrank the hover rule below */
+    .card:hover .circles .circle, body.replying .circles .circle { opacity: 1; }
     .circle {
       width: 26px;
       height: 26px;
@@ -134,6 +138,7 @@
     <div class="head">
       <span class="name" id="name"></span>
       <div class="circles">
+        <button class="circle always" id="mute" title="Shut it up">🔇</button>
         <button class="circle" id="voice" title="Answer by voice: go to the agent and start a dictation">🎤</button>
         <button class="circle" id="textBtn" title="Answer by text, right here">⌨</button>
         <button class="circle" id="dismiss" title="Dismiss (Esc)">✕</button>
@@ -191,7 +196,8 @@
     card.addEventListener('mouseenter', () => act('pin', { on: true }));
     card.addEventListener('mouseleave', () => act('pin', { on: replying }));
 
-    document.getElementById('dismiss').addEventListener('click', (e) => { e.stopPropagation(); act('dismiss'); });
+    document.getElementById('dismiss').addEventListener('click', (e) => { e.stopPropagation(); act('dismiss'); });   // also silences (bubbles.js)
+    document.getElementById('mute').addEventListener('click', (e) => { e.stopPropagation(); act('mute'); });
     document.getElementById('text').addEventListener('click', () => act('open'));
     // Voice: the agent's widget records and transcribes from its own Space;
     // this bubble is the face of that dictation (bubble:mic from main).

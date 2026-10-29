@@ -58,6 +58,25 @@ function stackPositions(workArea, heights, side, width = BUBBLE_WIDTH) {
   return out;
 }
 
+/**
+ * Pure: bubbles beside a widget (its bounds = anchor), top-aligned with it,
+ * to its right when that fits on the work area, else to its left; piled
+ * downward. The tail side follows: 'left' when the bubble is to the right.
+ */
+function anchorPositions(workArea, anchor, heights, width = BUBBLE_WIDTH) {
+  const toRight = anchor.x + anchor.width + BUBBLE_MARGIN + width <= workArea.x + workArea.width;
+  const x = toRight ? anchor.x + anchor.width + BUBBLE_MARGIN : anchor.x - width - BUBBLE_MARGIN;
+  let y = Math.max(workArea.y, anchor.y);
+  return heights.map((height) => {
+    const bounds = { x, y, width, height };
+    y += height + BUBBLE_MARGIN;
+    return bounds;
+  });
+}
+function anchorSide(workArea, anchor, width = BUBBLE_WIDTH) {
+  return anchor.x + anchor.width + BUBBLE_MARGIN + width <= workArea.x + workArea.width ? 'left' : 'right';
+}
+
 function clampHeight(h) {
   const n = Number(h);
   if (!Number.isFinite(n)) return BUBBLE_MIN_HEIGHT;
@@ -72,13 +91,19 @@ function createBubbles({ sources, log, onAction }) {
   /** @type {Array<{win: BrowserWindow, agentName: string, side: string, displayId: number, height: number, timer: any, pinned: boolean}>} */
   const bubbles = [];
 
-  const stackOf = (side, displayId) => bubbles.filter((b) => b.side === side && b.displayId === displayId);
+  // A pile is keyed by screen edge ('left'/'right') — or, for an agent whose
+  // widget is on the Space being looked at, by that agent: those bubbles pop
+  // out beside the widget itself (anchorPositions), not at a corner.
+  const stackOf = (stack, displayId) => bubbles.filter((b) => b.stack === stack && b.displayId === displayId);
 
-  function relayout(side, displayId) {
-    const stack = stackOf(side, displayId);
+  function relayout(stack, displayId) {
+    const pile = stackOf(stack, displayId);
     const display = screen.getAllDisplays().find((d) => d.id === displayId) || screen.getPrimaryDisplay();
-    const positions = stackPositions(display.workArea, stack.map((b) => b.height), side);
-    stack.forEach((b, i) => {
+    const anchor = pile.length ? pile[0].anchor : null;
+    const positions = anchor
+      ? anchorPositions(display.workArea, anchor, pile.map((b) => b.height))
+      : stackPositions(display.workArea, pile.map((b) => b.height), stack);
+    pile.forEach((b, i) => {
       if (!b.win.isDestroyed()) b.win.setBounds(positions[i]);
     });
   }
@@ -92,7 +117,7 @@ function createBubbles({ sources, log, onAction }) {
   function close(b) {
     forget(b);
     if (!b.win.isDestroyed()) b.win.close();
-    relayout(b.side, b.displayId);
+    relayout(b.stack, b.displayId);
   }
 
   function armTimer(b) {
@@ -108,10 +133,12 @@ function createBubbles({ sources, log, onAction }) {
    * @param {{agentName: string, text: string, color: string, opacity: number,
    *          side: 'left'|'right', display: Electron.Display}} spec
    */
-  function show({ agentName, text, color, opacity, side, display }) {
+  function show({ agentName, text, color, opacity, side, display, anchor = null, speakId = null }) {
     const displayId = display.id;
-    const stack = stackOf(side, displayId);
-    while (stack.length >= BUBBLE_MAX_PER_STACK) close(stack.shift());
+    if (anchor) side = anchorSide(display.workArea, anchor);
+    const stackKey = anchor ? `anchor:${agentName}` : side;
+    const pile = stackOf(stackKey, displayId);
+    while (pile.length >= BUBBLE_MAX_PER_STACK) close(pile.shift());
 
     const win = new BrowserWindow({
       width: BUBBLE_WIDTH,
@@ -141,22 +168,22 @@ function createBubbles({ sources, log, onAction }) {
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-    const b = { win, agentName, side, displayId, height: BUBBLE_MIN_HEIGHT, timer: null, pinned: false, voice: false, closing: false };
+    const b = { win, agentName, side, stack: stackKey, anchor, speakId, displayId, height: BUBBLE_MIN_HEIGHT, timer: null, pinned: false, voice: false, closing: false };
     bubbles.push(b);
     win.loadFile(path.join(sources.bubbleDir, 'bubble.html'), {
       query: { agent: agentName, text, color, opacity: String(opacity), side },
     });
     win.once('ready-to-show', () => {
       if (win.isDestroyed()) return;
-      relayout(side, displayId);
+      relayout(stackKey, displayId);
       win.showInactive();
       armTimer(b);
     });
     win.on('closed', () => {
       forget(b);
-      relayout(side, displayId);
+      relayout(stackKey, displayId);
     });
-    log.info('bubble', `${agentName}: ${side} (${text.length} chars)`);
+    log.info('bubble', `${agentName}: ${anchor ? 'beside the widget' : side} (${text.length} chars)`);
     return b;
   }
 
@@ -167,13 +194,16 @@ function createBubbles({ sources, log, onAction }) {
     switch (kind) {
       case 'size':
         b.height = clampHeight(payload.height);
-        relayout(b.side, b.displayId);
+        relayout(b.stack, b.displayId);
         return;
       case 'pin':
         b.pinned = Boolean(payload.on);
         armTimer(b);
         return;
       case 'dismiss':
+      case 'mute':
+        // Closing a bubble silences what it shows; 🔇 is the same, said plainly.
+        onAction('mute', b.agentName, payload);
         close(b);
         return;
       case 'voice':
@@ -228,11 +258,23 @@ function createBubbles({ sources, log, onAction }) {
     }
   }
 
+  /** The agent stopped talking (its speak turn ended): its bubble goes away —
+   * unless someone is using it (hovering, typing, dictating). */
+  function speakEnded(speakId) {
+    for (const b of bubbles) {
+      if (b.speakId !== speakId || b.closing || b.win.isDestroyed()) continue;
+      if (b.pinned || b.voice) continue;
+      b.closing = true;
+      clearTimeout(b.timer);
+      b.timer = setTimeout(() => close(b), 800);
+    }
+  }
+
   function closeAll() {
     for (const b of [...bubbles]) close(b);
   }
 
-  return { show, handle, micStatus, closeAll, count: () => bubbles.length };
+  return { show, handle, micStatus, speakEnded, closeAll, count: () => bubbles.length };
 }
 
-module.exports = { createBubbles, stackPositions, BUBBLE_WIDTH, BUBBLE_TTL_MS, BUBBLE_MAX_PER_STACK };
+module.exports = { createBubbles, stackPositions, anchorPositions, BUBBLE_WIDTH, BUBBLE_TTL_MS, BUBBLE_MAX_PER_STACK };

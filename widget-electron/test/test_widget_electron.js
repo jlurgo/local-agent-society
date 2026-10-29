@@ -1025,20 +1025,21 @@ test('bubbles: a speak envelope bubbles only when the agent is off the Space bei
   assert.match(body, /prefs\.speechBubbles === false\) return/, 'per-agent opt-out');
   assert.match(body, /seenSpeakIds/, 'a redelivered envelope never bubbles twice');
   assert.match(body, /pendingBubbles\.set\(envelope\.id/, 'an envelope is remembered, not shown: the bubble comes with the voice');
-  const show = extractFunctionBody(src, 'function showBubble(name, text) {');
+  const show = extractFunctionBody(src, 'function showBubble(name, text, speakId = null) {');
   assert.match(show, /spaces\.getSpaceOrderForWindow\(win\)/);
-  assert.match(show, /order\.index === order\.currentIndex\) return/, 'on the current Space the face shows it: no bubble');
+  assert.match(show, /anchor: onScreen \? bounds : null/, 'on the current Space the bubble pops out of the widget itself; off-Space, at the screen edge');
   assert.match(show, /order\.index < order\.currentIndex \? 'left' : 'right'/);
 });
 
 test('bubbles: shown by the speak ack — at playing, or at skipped (muted); dropped on any other end of the turn', () => {
   const src = readSrc('main.js');
   const body = extractFunctionBody(src, 'function bubbleOnSpeakAck(id, phase, reason, refused) {');
-  const fn = new Function('pendingBubbles', 'showBubble', `function bubbleOnSpeakAck(id, phase, reason, refused) ${body} return bubbleOnSpeakAck;`);
+  const fn = new Function('pendingBubbles', 'showBubble', 'bubbles', `function bubbleOnSpeakAck(id, phase, reason, refused) ${body} return bubbleOnSpeakAck;`);
+  const ended = [];
   const run = (phase, reason, refused) => {
     const shown = [];
     const pending = new Map([['s1', { name: 'A', text: 'hi', at: 0 }]]);
-    fn(pending, (n, t) => shown.push([n, t]))('s1', phase, reason, refused);
+    fn(pending, (n, t) => shown.push([n, t]), { speakEnded: (id) => ended.push([phase, id]) })('s1', phase, reason, refused);
     return { shown, left: pending.size };
   };
   assert.deepEqual(run('playing', null, false), { shown: [['A', 'hi']], left: 0 });
@@ -1049,6 +1050,28 @@ test('bubbles: shown by the speak ack — at playing, or at skipped (muted); dro
   assert.deepEqual(run('done', null, false), { shown: [], left: 0 });
   const ack = extractFunctionBody(src, "ipcMain.handle('queue:ack', async (_event, id, phase, reason, durationMs) => {");
   assert.match(ack, /bubbleOnSpeakAck\(id, phase, reason/, 'the ack handler drives the bubbles');
+  assert.ok(ended.some(([p]) => p === 'done'), 'done tells the bubbles the agent stopped talking');
+  assert.ok(!ended.some(([p]) => p === 'playing'), 'playing does not');
+});
+
+test('bubbles: 🔇 and closing silence the agent; a bubble goes when the agent stops talking unless it is in use; on-Space bubbles sit beside the widget', () => {
+  const bubblesSrc = readSrc('bubbles.js');
+  assert.match(bubblesSrc, /case 'dismiss':\s*case 'mute':[\s\S]*?onAction\('mute', b\.agentName/, 'closing a bubble silences what it shows');
+  const main = readSrc('main.js');
+  assert.match(extractFunctionBody(main, 'function onBubbleAction(kind, name, payload) {'), /kind === 'mute'[\s\S]*send\('speech:stop'\)/);
+  assert.match(readSrc('renderer', 'widget.js'), /onSpeechStop\(\(\) => stopCurrentSpeech\(\)\)/);
+  const ended = extractFunctionBody(bubblesSrc, 'function speakEnded(speakId) {');
+  assert.match(ended, /if \(b\.pinned \|\| b\.voice\) continue;/, 'a bubble being hovered, typed into or dictating stays');
+  assert.match(ended, /close\(b\)/);
+  const body = extractFunctionBody(bubblesSrc, 'function anchorPositions(workArea, anchor, heights, width = BUBBLE_WIDTH) {');
+  const fn = new Function('BUBBLE_WIDTH', 'BUBBLE_MARGIN', `function anchorPositions(workArea, anchor, heights, width = BUBBLE_WIDTH) ${body} return anchorPositions;`)(340, 10);
+  const area = { x: 0, y: 25, width: 1728, height: 1000 };
+  const beside = fn(area, { x: 100, y: 200, width: 245, height: 68 }, [80, 90]);
+  assert.deepEqual(beside[0], { x: 355, y: 200, width: 340, height: 80 }, 'to the right of the widget, top-aligned');
+  assert.equal(beside[1].y, 200 + 80 + 10, 'piled downward');
+  const left = fn(area, { x: 1500, y: 200, width: 245, height: 68 }, [80]);
+  assert.equal(left[0].x, 1500 - 340 - 10, 'to the left when the right does not fit');
+  assert.match(readSrc('renderer', 'bubble.html'), /id="mute"/);
 });
 
 test('bubbles: the actions go to the agent — focus (Space switch), focus + mic, or the same human-message send as a dictation', () => {
@@ -1792,26 +1815,4 @@ test('a clip never starts while the mic is held, and the one playing pauses and 
   assert.match(onHeld.slice(0, 500), /currentSpeech\.audioEl\.pause\(\)/, 'paused, not stopped: it must not be dropped');
   assert.match(onHeld.slice(0, 500), /currentSpeech\.resume\(\)/);
   assert.match(readSrc('preload.js'), /onMicHeld: \(cb\) =>/);
-});
-
-test('update notice: main polls the backend and pushes the status to every widget', () => {
-  const mainSrc = readSrc('main.js');
-  assert.match(mainSrc, /\/update\/status/);
-  assert.match(mainSrc, /setInterval\(pollUpdate, UPDATE_POLL_MS\)/);
-  assert.match(mainSrc, /webContents\.send\('update:status'/);
-  for (const ch of ['update:get', 'update:check', 'update:copy-command']) {
-    assert.ok(mainSrc.includes(`ipcMain.handle('${ch}'`), ch);
-  }
-  const preload = readSrc('preload.js');
-  for (const fn of ['getUpdateStatus', 'checkUpdate', 'copyUpdateCommand', 'onUpdateStatus']) assert.ok(preload.includes(fn), fn);
-});
-
-test('update notice: the gear gets a dot and the panel a row only while an update is available', () => {
-  const html = readSrc('renderer/index.html');
-  assert.match(html, /id="updateRow" class="settings-row update-row hidden"/);
-  assert.match(html, /id="updateCheck"/);
-  const js = readSrc('renderer/widget.js');
-  assert.match(js, /gearEl\.classList\.toggle\('has-update', available\)/);
-  assert.match(js, /updateRowEl\.classList\.toggle\('hidden', !available\)/);
-  assert.match(readSrc('renderer/widget.css'), /#gear\.has-update::after/);
 });

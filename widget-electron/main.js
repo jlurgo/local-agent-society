@@ -39,7 +39,7 @@
  * to that one function and no in-process Apple Events appear anywhere.
  */
 
-const { app, BrowserWindow, ipcMain, screen, session, powerMonitor, shell, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, session, powerMonitor, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -57,10 +57,6 @@ const spaces = require('./lib/spaces');
 // sources are left untouched — only their Info.plist registration changed.
 const PROTOCOL_SCHEME = 'localagentsociety';
 const REGISTRY_URL = process.env.LAS_REGISTRY_URL || 'http://localhost:8700';
-// Update notice (backend/updates.py): how often every widget asks, and what the panel offers to copy.
-const UPDATE_POLL_MS = 60 * 1000;
-const UPDATE_CHECK_TIMEOUT_MS = 90 * 1000;
-const UPDATE_COMMAND = 'las update';
 
 // ── persistent logging (session/widget.log) ─────────────────────────────────
 // Launched via `open` (see start.sh), so this process's stdout/stderr goes
@@ -518,8 +514,14 @@ function createWidgetWindow(name, { forgetPosition = false } = {}) {
 
   // Forward renderer console output to the main process's stdout — handy
   // for headless smoke-testing and debugging; harmless in normal use.
-  win.webContents.on('console-message', (_event, _level, message) => {
+  // Warnings and errors ALSO go to session/widget.log: launched via `open`,
+  // this process's stdout is unreadable, and a renderer exception (e.g. in
+  // the speak chain) otherwise leaves no trace anywhere — a widget just
+  // goes silent (Ops, 2026-10-29: a speak synthesized, never played, no
+  // line explained it).
+  win.webContents.on('console-message', (_event, level, message) => {
     console.log(`[widget:${name}]`, message);
+    if (level >= 2) log[level >= 3 ? 'error' : 'warn']('renderer', `${name}: ${String(message).slice(0, 600)}`);
   });
 
   win.agentName = name;
@@ -1376,32 +1378,36 @@ function maybeBubble(name, win, envelope) {
 
 /** The widget acked its speak turn (queue:ack): show, or forget, its bubble. */
 function bubbleOnSpeakAck(id, phase, reason, refused) {
+  // The agent stopped talking: its bubble goes (bubbles.js keeps one in use).
+  if (bubbles && (phase === 'done' || (phase === 'skipped' && reason !== 'muted'))) bubbles.speakEnded(id);
   const p = pendingBubbles.get(id);
   if (!p) return;
   const show = !refused && (phase === 'playing' || (phase === 'skipped' && reason === 'muted'));
   if (show || refused || phase === 'done' || phase === 'skipped') pendingBubbles.delete(id);
-  if (show) showBubble(p.name, p.text);
+  if (show) showBubble(p.name, p.text, id);
 }
 
-function showBubble(name, text) {
+function showBubble(name, text, speakId = null) {
   const win = windows.get(name);
   if (!bubbles || !win || win.isDestroyed()) return;
   const prefs = getPrefs(name);
-  let side;
+  const bounds = collapsedBounds.get(win) || win.getBounds();
+  const display = screen.getDisplayMatching(bounds);
+  let side = 'right';
+  let onScreen = false;
   const order = spaces.getSpaceOrderForWindow(win);
   if (order) {
-    if (order.index === order.currentIndex) return;   // on screen: the face shows it
+    onScreen = order.index === order.currentIndex;
     side = order.index < order.currentIndex ? 'left' : 'right';
   } else {
-    // No order (API gone, non-macOS): still bubble when known to be
-    // off-Space, or when nothing is known at all — never when known on-Space.
+    // No order (API gone, non-macOS): on-Space only when known for sure.
     const space = spaces.getSpaceForWindow(win);
     const current = space != null ? spaces.getCurrentSpaceForWindow(win) : null;
-    if (space != null && current != null && space === current) return;
-    side = 'right';
+    onScreen = space != null && current != null && space === current;
   }
-  const display = screen.getDisplayMatching(collapsedBounds.get(win) || win.getBounds());
-  bubbles.show({ agentName: name, text, color: prefs.color, opacity: prefs.opacity, side, display });
+  // On the Space being looked at, the bubble pops out of the widget itself
+  // (anchored to its bounds); off-Space, at the screen edge toward its Space.
+  bubbles.show({ agentName: name, text, color: prefs.color, opacity: prefs.opacity, side, display, anchor: onScreen ? bounds : null, speakId });
 }
 
 /** Bring an agent's widget to the user: macOS switches to its Space when
@@ -1425,6 +1431,9 @@ function onBubbleAction(kind, name, payload) {
   const win = windows.get(name);
   if (kind === 'open') {
     focusWidget(name);
+  } else if (kind === 'mute') {
+    // Shut it up: the widget stops the clip it is playing (and acks it skipped).
+    if (win && !win.isDestroyed()) win.webContents.send('speech:stop');
   } else if (kind === 'voice' || kind === 'mic-stop' || kind === 'mic-cancel') {
     // The widget records, transcribes and sends from its own Space, unseen;
     // the bubble shows the phases (mic:status below). No Space switch.
@@ -2153,32 +2162,6 @@ app.whenReady().then(async () => {
     }
     return next;
   });
-
-  // Update notice: the backend fetches the checkout's upstream in the
-  // background (backend/updates.py) and answers from memory, so polling it
-  // every minute is free; every widget's gear gets a dot and its panel a row
-  // the moment a new version is published, even with the widget already open.
-  let updateStatus = null;
-  const broadcastUpdate = (s) => {
-    if (!s || JSON.stringify(s) === JSON.stringify(updateStatus)) return updateStatus;
-    updateStatus = s;
-    for (const win of windows.values()) {
-      if (!win.isDestroyed()) win.webContents.send('update:status', s);
-    }
-    return s;
-  };
-  const pollUpdate = async (method = 'GET', urlPath = '/update/status') => {
-    try {
-      const res = await fetch(`${REGISTRY_URL}${urlPath}`, { method, signal: AbortSignal.timeout(UPDATE_CHECK_TIMEOUT_MS) });
-      if (res.ok) return broadcastUpdate(await res.json());
-    } catch { /* backend restarting — keep the last answer */ }
-    return updateStatus;
-  };
-  pollUpdate();
-  setInterval(pollUpdate, UPDATE_POLL_MS);
-  ipcMain.handle('update:get', () => updateStatus);
-  ipcMain.handle('update:check', () => pollUpdate('POST', '/update/check'));
-  ipcMain.handle('update:copy-command', () => { clipboard.writeText(UPDATE_COMMAND); return UPDATE_COMMAND; });
 
   const explicit = resolveInitialAgentNames(process.argv);
   if (explicit) {
