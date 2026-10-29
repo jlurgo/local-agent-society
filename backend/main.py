@@ -621,6 +621,18 @@ def get_kokoro():
     return _kokoro
 
 
+def kokoro_voice_style(kokoro, voice: str):
+    """A plain id ("ef_dora") passes through; "ef_dora+em_alex" is the
+    equal-weight average of those voices' style vectors — a new, stable voice.
+    Kokoro ships only three Spanish voices, so blends are how a society of
+    dozens of Spanish-speaking agents gets more than three distinct voices."""
+    if "+" not in voice:
+        return voice
+    parts = [p.strip() for p in voice.split("+") if p.strip()]
+    styles = [kokoro.get_voice_style(p) for p in parts]
+    return sum(styles) / len(styles)
+
+
 class TTSRequest(BaseModel):
     text: str
     voice: str = "af_heart"
@@ -637,7 +649,7 @@ def tts_synthesize(req: TTSRequest):
         )
     try:
         kokoro = get_kokoro()
-        samples, sample_rate = kokoro.create(req.text, voice=req.voice, speed=req.speed, lang=req.lang)
+        samples, sample_rate = kokoro.create(req.text, voice=kokoro_voice_style(kokoro, req.voice), speed=req.speed, lang=req.lang)
     except Exception as e:
         logger.error(f"tts: synthesis failed (voice={req.voice!r} lang={req.lang!r}): {e}")
         raise HTTPException(status_code=500, detail=str(e))

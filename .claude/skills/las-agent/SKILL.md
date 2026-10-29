@@ -136,7 +136,7 @@ The TTS engine only sounds natural when the text is in the voice's own language.
 2. If there's no locale, derive it from `voice` using the table above.
 3. Default if neither is available: **English**.
 
-**Which voice actually sounds.** Synthesis is Kokoro (backend), not macOS `say`: the `voice` name above only decides the *language*; the widget then hashes the agent's name into that language's Kokoro pool (`widget-electron/lib/kokoroVoices.js`), so the gender is whatever the hash lands on. To pin one explicitly — e.g. a masculine Spanish voice — set `"tts_voice": "em_alex"` (any id from that pool: `ef_dora`/`em_alex`/`em_santa` for Spanish, `af_*`/`am_*`/`bf_*`/`bm_*` for English) in `.las-agent.json` and `las agent sync`; an unknown id warns and falls back to the hash.
+**Which voice actually sounds.** Synthesis is Kokoro (backend), not macOS `say`: the `voice` name above only decides the *language*; the widget then hashes the agent's name into that language's Kokoro pool (`widget-electron/lib/kokoroVoices.js`), so the gender is whatever the hash lands on. To pin one explicitly — e.g. a masculine Spanish voice — set `"tts_voice": "em_alex"` (any id from that pool: `ef_dora`/`em_alex`/`em_santa` and their blends — `ef_dora+em_alex`, `ef_dora+ef_dora+em_santa`, …, an equal-weight average of the listed voices, the backend's `kokoro_voice_style` — for Spanish, `af_*`/`am_*`/`bf_*`/`bm_*` for English) in `.las-agent.json` and `las agent sync`; an unknown id warns and falls back to the hash.
 
 **Nothing speaks over the mic.** While any widget records a dictation, every LAS voice waits: the clip playing pauses and resumes after, queued ones hold (`POST /queue/hold`, the widget's mic gate). Your `las speak` is never lost, just delayed — don't retry it or work around the wait.
 
@@ -239,22 +239,24 @@ las agent inject <OtherAgent> "Port <PORT> is needed — can you release it?" --
 
 > **KEEP THIS UPDATED:** this table lives in the `local-agent-society` repo. Whenever an agent is added, removed, or changed, update it here too.
 
-| Agent | Voice | Path | Stack | Ports |
+| Agent | Voice (lang / Kokoro `tts_voice`) | Path | Stack | Ports |
 |--------|-----|------|-------|---------|
-| LocalAgentSociety | Samantha (EN) | `local-agent-society` | — | 8700 |
-| Garantido | Daniel (EN) | `Garantido` | Next.js 16 + Turbopack | 8765, 8010, 9001 |
-| NeuroFlow | Moira (EN) | `NeuroFlow` | Vite frontend | 5181, 8510 |
-| Forti | Mónica (ES) | `Forti` | — | — |
-| Pulpo | Tessa (EN) | `pulpo` | Vite frontend + Python backend | 5173, 8000, 9004 |
-| HomeControl | Shelley (EN) | `home-control` | — | — |
-| Wavi | Flo (EN) | `wavi` | Chrome headless (WhatsApp automation) | 9200–9233 |
-| Minis App Acces | Sandy (EN) | `Ctrol_Acc_Mv2026` | — | — |
-| System | Reed (EN) | `System` | Infrastructure monitor | — |
-| Teli | Rishi (EN) | `teli` | Telegram automation | — |
-| Robotics | Paulina (ES) | `Robotics` | — | — |
-| LocalModels | Eddy (EN) | `local-models` | Ollama + gemma4:e4b, API :11434 | 9002 |
-| Luganense | Jorge (ES) | `Luganense` | Next.js | 9003 |
-| Vortexia | Sandy (EN) | `vortexia` | Local MQTT broker + vortex-relay | 9012, 9014 |
+| LocalAgentSociety | Paulina / `ef_dora` | `local-agent-society` | — | 8700 |
+| Garantido | Mónica / `em_alex` | `Garantido` | Next.js 16 + Turbopack | 8765, 8010, 9001 |
+| NeuroFlow | Jorge / `em_santa` | `NeuroFlow` | Vite frontend | 5181, 8510 |
+| Forti | Paulina / `ef_dora+em_alex` | `Forti` | — | — |
+| Pulpo | Mónica / `ef_dora+em_santa` | `pulpo` | Vite frontend + Python backend | 5173, 8000, 9004 |
+| HomeControl | Jorge / `em_alex+em_santa` | `home-control` | — | — |
+| Wavi | Paulina / `ef_dora+em_alex+em_santa` | `wavi` | Chrome headless (WhatsApp automation) | 9200–9233 |
+| Minis App Acces | Mónica / `ef_dora+ef_dora+em_alex` | `Ctrol_Acc_Mv2026` | — | — |
+| System | Jorge / `ef_dora+ef_dora+em_santa` | `System` | Infrastructure monitor | — |
+| Teli | Paulina / `ef_dora` | `teli` | Telegram automation | — |
+| Robotics | Mónica / `em_alex` | `Robotics` | — | — |
+| LocalModels | Jorge / `em_santa` | `local-models` | Ollama + gemma4:e4b, API :11434 | 9002 |
+| Luganense | Paulina / `ef_dora+em_alex` | `Luganense` | Next.js | 9003 |
+| Vortexia | Mónica / `ef_dora+em_santa` | `vortexia` | Local MQTT broker + vortex-relay | 9012, 9014 |
+
+The rest of the registry (`las agents`) follows the same rotation. **Per-machine language (user decision, 2026-10-28):** every agent on **this Mac (ba-mac) speaks Spanish** — `voice` Paulina/Mónica/Jorge, `locale` `es-*`, and a `tts_voice` rotated over the 9 Spanish Kokoro voices (repeats are fine once they run out). Every agent on **uy-mac speaks English** — English `voice`/`locale`, `tts_voice` spread over the 28 English Kokoro voices. A new agent follows its machine's language: pick the least-used `tts_voice` of that language.
 
 This table only lists this machine's agents. Other machines (e.g. `uy-mac`) run their own society with their own roster — reach them by name via §4, not by expecting them to appear in this table.
 

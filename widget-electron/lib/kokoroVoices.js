@@ -47,6 +47,14 @@ const KOKORO_VOICES = Object.freeze([
   { name: 'ef_dora', lang: 'es-ES', kokoroLang: 'es' },
   { name: 'em_alex', lang: 'es-ES', kokoroLang: 'es' },
   { name: 'em_santa', lang: 'es-ES', kokoroLang: 'es' },
+  // Kokoro has only three Spanish voices; "a+b" is an equal-weight blend of
+  // their style vectors (backend kokoro_voice_style), a distinct voice of its own.
+  { name: 'ef_dora+em_alex', lang: 'es-ES', kokoroLang: 'es' },
+  { name: 'ef_dora+em_santa', lang: 'es-ES', kokoroLang: 'es' },
+  { name: 'em_alex+em_santa', lang: 'es-ES', kokoroLang: 'es' },
+  { name: 'ef_dora+em_alex+em_santa', lang: 'es-ES', kokoroLang: 'es' },
+  { name: 'ef_dora+ef_dora+em_alex', lang: 'es-ES', kokoroLang: 'es' },
+  { name: 'ef_dora+ef_dora+em_santa', lang: 'es-ES', kokoroLang: 'es' },
 ]);
 
 module.exports = { KOKORO_VOICES };
