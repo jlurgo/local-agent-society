@@ -28,7 +28,7 @@ const post = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 
 
 // ── layout (meters / radians) — everything on spheres around your head ─────
 const EYE_Y = 1.25;
-const CLOUD = { r: 1.9, step: 0.11, aside: 0.72, follow: 0.035, bubbleR: 0.12 };   // sunflower of bubbles
+const CLOUD = { r: 1.9, step: 0.11, follow: 0.06, bubbleR: 0.12, margin: 0.05 };   // sunflower of bubbles: follows the gaze, flows around what is in the middle
 const MOSAIC = { r: 1.85, az: 0.36, el: 0.27, aside: 0.62 };
 const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045;
 const THUMB_W = 400, LIVE_W = 1100, SCREEN_W = 1500, SCREEN_W_HI = 2400, SCREEN_WIDTH_M = 1.7, SCREEN_DIST = 1.4, MAX_SCREENS = 3;
@@ -79,7 +79,7 @@ function rebaseToHead() {
   return true;
 }
 const viewer = new THREE.Vector3(), viewerWorld = new THREE.Vector3();   // the eyes, in root space / world
-let headYaw = 0, gazeAz = 0;   // where you look (yaw, in root space), and the smoothed azimuth the bubbles follow
+let headYaw = 0, headPitch = 0, gazeAz = 0, gazeEl = 0;   // where you look (in root space), and the smoothed direction the bubbles follow
 const dirFrom = (az, el) => new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
 const onSphere = (az, el, r) => viewer.clone().addScaledVector(dirFrom(az, el), r / root.scale.x);
 function place(obj, az, el, r) { obj.position.copy(onSphere(az, el, r)); obj.lookAt(viewerWorld); }
@@ -184,24 +184,53 @@ function makeFlower(agent) {
   return f;
 }
 
-/** Where the sunflower's center is: your gaze (smoothed), pushed aside of open screens. */
-function cloudCenter() { return { az: gazeAz + (screens.length ? -CLOUD.aside : 0), el: screens.length ? 0.08 : 0 }; }
-function mosaicCenter() { return { az: mosaicAz + (screens.length ? MOSAIC.aside : 0), el: 0 }; }
+/** The sunflower's center is your gaze (smoothed, both axes). */
+function cloudCenter() { return { az: gazeAz, el: gazeEl }; }
+function mosaicCenter() { return { az: mosaicAz, el: 0 }; }
 let mosaicAz = 0;   // the mosaic stays where the agent was selected (it does not follow the gaze)
 
-/** Sunflower targets, every frame (cheap): seed i at r = step·√i, angle i·golden; the selected agent takes seed 0. */
+/** What occupies the middle of the view, as angular boxes around the viewer: open screens, the keyboard, the mosaic. */
+function obstacles() {
+  const list = [];
+  const tmp = new THREE.Vector3();
+  const angOf = (obj) => { obj.getWorldPosition(tmp); tmp.sub(viewerWorld); const d = tmp.length() || 1; return { az: Math.atan2(tmp.x, -tmp.z), el: Math.asin(THREE.MathUtils.clamp(tmp.y / d, -1, 1)), d }; };
+  for (const sc of screens) {
+    const g = sc.mesh.geometry.parameters, a = angOf(sc.mesh), k = root.scale.x;
+    list.push({ az: a.az, el: a.el, hAz: Math.atan((g.width * sc.mesh.scale.x * k / 2) / a.d) + CLOUD.margin, hEl: Math.atan((g.height * sc.mesh.scale.y * k / 2) / a.d) + CLOUD.margin });
+  }
+  if (keyboard && activeScreen) { const a = angOf(keyboard.group); list.push({ az: a.az, el: a.el - 0.08, hAz: Math.atan(0.6 * root.scale.x / a.d) + CLOUD.margin, hEl: Math.atan(0.22 * root.scale.x / a.d) + CLOUD.margin }); }
+  if (panels.length) { const c = mosaicCenter(), k = panels[0].count <= 4 ? 1 : 1.18; list.push({ az: c.az, el: c.el + 0.03, hAz: MOSAIC.az * k + 0.16, hEl: MOSAIC.el * k + 0.2 }); }
+  return list;
+}
+/** Push a direction out of every obstacle box it falls in, to the box's rim along the line from the box center. */
+function avoid(az, el, obs) {
+  for (let pass = 0; pass < 3; pass++) {
+    for (const o of obs) {
+      let dAz = az - o.az; dAz = Math.atan2(Math.sin(dAz), Math.cos(dAz));
+      const dEl = el - o.el;
+      if (Math.abs(dAz) >= o.hAz || Math.abs(dEl) >= o.hEl) continue;
+      const nx = dAz / o.hAz, ny = dEl / o.hEl, len = Math.hypot(nx, ny) || 1e-3;
+      const ux = nx / len, uy = ny / len;
+      const t = 1 / Math.max(Math.abs(ux), Math.abs(uy));   // to the rim of the unit box along (ux, uy)
+      az = o.az + ux * t * o.hAz + ux * 0.03;
+      el = o.el + uy * t * o.hEl + uy * 0.03;
+    }
+  }
+  return { az, el };
+}
+
+/** Sunflower targets, every frame (cheap): seed i at r = step·√i, angle i·golden, around the gaze, flowing around obstacles. */
 function layoutCloud() {
   const names = [...flowers.keys()].sort();
   const order = selected ? [selected, ...names.filter((n) => n !== selected)] : names;
-  const c = cloudCenter();
+  const c = cloudCenter(), obs = obstacles();
   order.forEach((n, i) => {
     const f = flowers.get(n);
+    if (n === selected) { f.target.copy(onSphere(mosaicCenter().az, 0, MOSAIC.r - 0.05)); return; }
     const k = selected ? i : i + 1;                   // with nothing selected, no seed sits dead center
     const rr = CLOUD.step * Math.sqrt(k), th = k * GOLDEN;
-    let az = c.az + rr * Math.cos(th), el = c.el + rr * Math.sin(th), r = CLOUD.r;
-    if (f.talking) { r = CLOUD.r - 0.5; }               // a talking agent comes closer
-    if (n === selected) { az = mosaicCenter().az; el = 0; r = MOSAIC.r - 0.05; }
-    f.target.copy(onSphere(az, el, r));
+    const a = avoid(c.az + rr * Math.cos(th), c.el + rr * Math.sin(th), obs);
+    f.target.copy(onSphere(a.az, a.el, f.talking ? CLOUD.r - 0.5 : CLOUD.r));   // a talking agent comes closer
   });
 }
 
@@ -312,7 +341,7 @@ function openScreen(panel, label) {
   const sc = { wid: panel.wid, mesh, handles, kind: panel.kind, loading: false, at: 0, aspectSet: false, focused: false };
   screens.push(sc); activeScreen = sc;
   // new screens open where you look, stepping to the side of ones already there
-  place(mesh, gazeAz + (screens.length - 1) * 0.5 - (screens.length - 1) * 0.25, 0.02, SCREEN_DIST);
+  place(mesh, headYaw + (screens.length - 1) * 0.5 - (screens.length - 1) * 0.25, headPitch * 0.5, SCREEN_DIST);
   placeHandles(sc);
   const tt = panel.kind === 'terminal' ? termTex.get(panel.wid) : null;
   if (tt) { applyTexture(mesh, tt.tex, tt.aspect, SCREEN_WIDTH_M); sc.aspectSet = true; }
@@ -593,8 +622,10 @@ renderer.setAnimationLoop(() => {
   fwd.set(0, 0, -1).applyQuaternion(cam.quaternion);
   const rootYaw = new THREE.Euler().setFromQuaternion(root.quaternion, 'YXZ').y;
   headYaw = Math.atan2(fwd.x, -fwd.z) - rootYaw;
+  headPitch = Math.asin(THREE.MathUtils.clamp(fwd.y, -1, 1));
   let d = headYaw - gazeAz; d = Math.atan2(Math.sin(d), Math.cos(d));
   gazeAz += d * CLOUD.follow;
+  gazeEl += (THREE.MathUtils.clamp(headPitch, -0.7, 0.7) - gazeEl) * CLOUD.follow;
   updateGrabs();
   layoutCloud();
   placeMosaic();
