@@ -27,7 +27,7 @@ window.addEventListener('unhandledrejection', (e) => report({ error: 'unhandled:
 const post = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));
 
 // ── layout (meters) ────────────────────────────────────────────────────────
-const EYE_Y = 1.45;
+const EYE_Y = 1.25;   // the display's default height; grab it (grip) to put it where you like
 const FLOWER = { z: -1.9, petalR: 0.78, petalROpen: 1.08, bubbleR: 0.12 };
 const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045, MOSAIC_R = 0.66;
 const THUMB_W = 400, LIVE_W = 1100, STAGE_W = 1500, STAGE_W_HI = 2400, STAGE_WIDTH_M = 2.0, STAGE_DIST = 1.4;
@@ -55,6 +55,13 @@ const scene = new THREE.Scene();
 scene.background = null;
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 60);
 camera.position.set(0, EYE_Y, 0);
+// Everything you see (agents, mosaic, big view, keyboard, speech bubbles)
+// hangs from ROOT, so a grip on empty space moves it all and two grips
+// scale it; where you leave it is remembered.
+const root = new THREE.Group();
+scene.add(root);
+try { const saved = JSON.parse(localStorage.getItem('las-spaces-root') || 'null'); if (saved) { root.position.fromArray(saved.p); root.scale.setScalar(saved.s || 1); } } catch { /* fresh */ }
+const saveRoot = () => { try { localStorage.setItem('las-spaces-root', JSON.stringify({ p: root.position.toArray(), s: root.scale.x })); } catch { /* ignore */ } };
 scene.add(new THREE.HemisphereLight(0xffffff, 0x303040, 1.1));
 const sun = new THREE.DirectionalLight(0xffffff, 0.8); sun.position.set(1, 3, 2); scene.add(sun);
 const floor = new THREE.Mesh(new THREE.CircleGeometry(6, 48), new THREE.MeshBasicMaterial({ color: 0x14141a }));
@@ -157,7 +164,7 @@ function makeFlower(agent) {
   group.add(label);
   const f = { group, sphere, label, agent, color: agent.color || '#90c060', target: new THREE.Vector3(), phase: Math.random() * Math.PI * 2, speech: null, title: null };
   flowers.set(agent.name, f);
-  scene.add(group);
+  root.add(group);
   return f;
 }
 
@@ -184,7 +191,7 @@ function layoutFlower() {
 }
 
 function clearPanels() {
-  for (const p of panels) { scene.remove(p.mesh); scene.remove(p.label); disposeObject(p.mesh); disposeObject(p.label); const i = hoverables.indexOf(p.mesh); if (i !== -1) hoverables.splice(i, 1); }
+  for (const p of panels) { root.remove(p.mesh); root.remove(p.label); disposeObject(p.mesh); disposeObject(p.label); const i = hoverables.indexOf(p.mesh); if (i !== -1) hoverables.splice(i, 1); }
   panels.length = 0;
 }
 
@@ -205,7 +212,7 @@ function buildMosaic() {
     const labelText = win.session ? `${win.session.runtime} — ${win.title}` : (win.title || win.app);
     const label = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, LABEL_H), new THREE.MeshBasicMaterial({ map: textTexture(labelText, { width: 1024, height: 92, fg: win.kind === 'terminal' ? '#cfe8ff' : '#e8e8e8', font: '30px -apple-system, system-ui, sans-serif' }), transparent: true }));
     label.position.set(x, y - PANEL_H / 2 - LABEL_H / 2 - 0.005, z);
-    scene.add(mesh); scene.add(label); hoverables.push(mesh);
+    root.add(mesh); root.add(label); hoverables.push(mesh);
     const p = { mesh, label, wid: win.wid, kind: win.kind, loading: false, at: 0 };
     const tt = win.kind === 'terminal' ? termTex.get(win.wid) : null;
     if (tt) applyTexture(mesh, tt.tex, tt.aspect);
@@ -221,12 +228,12 @@ function buildWorld() {
     const f = flowers.get(a.name);
     if (f) { f.agent = a; } else makeFlower(a);
   }
-  for (const [name, f] of flowers) if (!seen.has(name)) { scene.remove(f.group); disposeObject(f.group); for (const o of [f.sphere, f.title]) { const i = hoverables.indexOf(o); if (i !== -1) hoverables.splice(i, 1); } flowers.delete(name); }
+  for (const [name, f] of flowers) if (!seen.has(name)) { root.remove(f.group); disposeObject(f.group); for (const o of [f.sphere, f.title]) { const i = hoverables.indexOf(o); if (i !== -1) hoverables.splice(i, 1); } flowers.delete(name); }
   if (selected && !flowers.has(selected)) selected = null;
   layoutFlower();
   buildMosaic();
   if (stage && !panels.some((p) => p.wid === stage.wid)) closeStage();
-  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · circle: select · tile: big · big view: trigger clicks, stick scrolls, grip + move to resize, keys below · A/B: close`;
+  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · circle: select · tile: big · big view: trigger clicks, stick scrolls, grip on it to resize · grip on nothing: move the display, both grips: scale it · A/B: close`;
 }
 
 function select(name) {
@@ -261,7 +268,7 @@ function openStage(panel, label) {
   frame.position.z = -0.003; mesh.add(frame);
   const title = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(label, { width: 1536, height: 64, font: '34px -apple-system, system-ui, sans-serif', fg: '#fff' }), transparent: true }));
   title.position.y = STAGE_WIDTH_M * 9 / 32 + 0.05; mesh.add(title);
-  scene.add(mesh); hoverables.push(mesh);
+  root.add(mesh); hoverables.push(mesh);
   // Four corner handles: grip one and move the controller to resize (aspect kept).
   const handles = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) => {
     const h = new THREE.Mesh(new THREE.CircleGeometry(0.055, 24), new THREE.MeshBasicMaterial({ color: 0x8ab4ff, side: THREE.DoubleSide }));
@@ -290,7 +297,7 @@ async function ensureFocused() {
 }
 function closeStage() {
   if (!stage) return;
-  scene.remove(stage.mesh);
+  root.remove(stage.mesh);
   for (const o of [stage.mesh, ...stage.handles]) { const i = hoverables.indexOf(o); if (i !== -1) hoverables.splice(i, 1); }
   disposeObject(stage.mesh);
   if (hovered === stage.mesh) setHovered(null);
@@ -341,8 +348,8 @@ const controllers = [0, 1].map((i) => {
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0x8ab4ff }));
   line.scale.z = 4; c.add(line);
   c.addEventListener('selectstart', () => { const hit = pickHit(c); act(hit ? hit.object : null, uvOf(hit)); });
-  c.addEventListener('squeezestart', () => startResize(c));
-  c.addEventListener('squeezeend', () => { resizing = null; });
+  c.addEventListener('squeezestart', () => startGrab(c));
+  c.addEventListener('squeezeend', () => endGrab(c));
   c.addEventListener('selectend', () => { if (resizing && resizing.byTrigger) resizing = null; });
   scene.add(c);
   return c;
@@ -381,6 +388,38 @@ let lastMoveAt = 0, lastScrollAt = 0;
 let resizing = null;   // { controller, plane, center, startDist, startScale }
 // Resize: grip while pointing anywhere at the big view (or at a corner), or
 // hold the trigger on a corner handle; move the controller in or out.
+const grabs = new Map();   // controller → { start: Vector3 (controller), rootStart: Vector3 }
+let twoHand = null;        // { startDist, startScale, startRoot, startMid }
+function startGrab(controller) {
+  const hit = pickHit(controller);
+  if (stage && hit && (hit.object.userData.action === 'resize' || hit.object.userData.action === 'stage')) { startResize(controller); return; }
+  const start = new THREE.Vector3(); start.setFromMatrixPosition(controller.matrixWorld);
+  grabs.set(controller, { start, rootStart: root.position.clone() });
+  if (grabs.size === 2) {
+    const [a, b] = [...grabs.keys()].map((c) => new THREE.Vector3().setFromMatrixPosition(c.matrixWorld));
+    twoHand = { startDist: Math.max(0.05, a.distanceTo(b)), startScale: root.scale.x, startRoot: root.position.clone(), startMid: a.clone().add(b).multiplyScalar(0.5) };
+  }
+}
+function endGrab(controller) {
+  grabs.delete(controller); twoHand = null; resizing = null;
+  for (const g of grabs.values()) { g.start.setFromMatrixPosition([...grabs.keys()][0].matrixWorld); g.rootStart.copy(root.position); }
+  saveRoot();
+}
+function updateGrabs() {
+  if (twoHand && grabs.size === 2) {
+    const [a, b] = [...grabs.keys()].map((c) => new THREE.Vector3().setFromMatrixPosition(c.matrixWorld));
+    const sc = THREE.MathUtils.clamp(twoHand.startScale * a.distanceTo(b) / twoHand.startDist, 0.3, 3);
+    const mid = a.add(b).multiplyScalar(0.5);
+    // scale about the hands' starting midpoint, and follow the hands
+    root.position.copy(twoHand.startRoot).sub(twoHand.startMid).multiplyScalar(sc / twoHand.startScale).add(twoHand.startMid).add(mid.clone().sub(twoHand.startMid));
+    root.scale.setScalar(sc);
+    return;
+  }
+  for (const [c, g] of grabs) {
+    const now = new THREE.Vector3().setFromMatrixPosition(c.matrixWorld);
+    root.position.copy(g.rootStart).add(now.sub(g.start));
+  }
+}
 function startResize(controller) {
   const hit = pickHit(controller);
   if (!stage || !hit) return;
@@ -462,7 +501,7 @@ function buildKeyboard() {
   paintKeys();
   group.position.set(0, EYE_Y - 0.62, -STAGE_DIST + 0.15);
   group.rotation.x = -0.55;
-  scene.add(group);
+  root.add(group);
 }
 function paintKeys() {
   if (!keyboard) return;
@@ -478,7 +517,7 @@ function paintKeys() {
 }
 function destroyKeyboard() {
   if (!keyboard) return;
-  scene.remove(keyboard.group);
+  root.remove(keyboard.group);
   for (const { mesh } of keyboard.keys) { const i = hoverables.indexOf(mesh); if (i !== -1) hoverables.splice(i, 1); }
   disposeObject(keyboard.group);
   keyboard = null;
@@ -507,14 +546,17 @@ function setHovered(obj) {
 }
 
 const clock = new THREE.Clock();
+const viewer = new THREE.Vector3();
 renderer.setAnimationLoop(() => {
   pollGamepads();
+  viewer.set(0, EYE_Y, 0); root.worldToLocal(viewer);   // where the boards turn to face, in root space
+  updateGrabs();
   const t = clock.getElapsedTime();
   for (const f of flowers.values()) {
     f.group.position.lerp(f.target, 0.08);
     f.group.position.y += Math.sin(t * 1.3 + f.phase) * 0.0025;
     f.sphere.scale.setScalar(THREE.MathUtils.lerp(f.sphere.scale.x, hovered === f.sphere ? 1.12 : 1, 0.2));
-    f.group.lookAt(0, EYE_Y, 0);
+    f.group.lookAt(viewer);
   }
   let h = null;
   if (renderer.xr.isPresenting) { for (const c of controllers) h = pick(c) || h; }
