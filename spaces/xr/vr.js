@@ -1,15 +1,17 @@
 // LAS Spaces — the immersive view (WebXR + three.js). See
 // docs/plans/2026-10-29-quest-spaces.md, "The workspace view".
 //
-// Each Space with an agent or windows is a BOARD: a header (the agent's
-// name in its color, or the Space number) over a grid of PANELS, one per
-// window, textured with the window's live pixels from /thumb. Boards stand
-// on a RING around you in Mission Control order with the current Space
-// ahead, or on a WALL (mosaic). Point a controller at a panel and pull the
-// trigger to focus that window on the Mac (switching its Space); at a
-// header to go to that Space. The panel you point at is refreshed live.
-// Outside VR the same scene renders flat (a mouse works), which is how it
-// is debugged from the Mac.
+// This is a view of the LAS AGENTS, not a remote control for the Mac. Each
+// agent is a BOARD: its name in its color over its windows — the terminals
+// of its sessions first, then the other terminals and the browser windows
+// on its Space (tabs come with the extension). Boards stand on a RING
+// around you; the SELECTED agent stands big in the middle, the others
+// smaller around it, and the thumbstick scrolls the ring. Trigger on a
+// board's header selects that agent (nothing happens on the Mac). Trigger
+// on a terminal or browser panel puts it on the STAGE, big, and focuses
+// that window on the Mac — so the physical keyboard types into it. The
+// stage and the pointed panel are live. Outside VR the same scene renders
+// flat (a mouse works), which is how it is debugged from the Mac.
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 
@@ -96,8 +98,7 @@ function applyTexture(mesh, tex, aspect, width = null) {
 
 // ── boards ─────────────────────────────────────────────────────────────────
 let world = null;
-let layout = localStorage.getItem('las-spaces-layout') || 'ring';
-let focusedSpace = null;    // the Space whose board is big in the middle (default: the Mac's current one)
+let focusedSpace = null;    // the selected agent's Space: its board is big in the middle (default: the Mac's current one)
 let ringOffset = 0;         // thumbstick / arrow keys turn the ring
 const boards = [];          // { group, space, header, panels: [{ mesh, wid, tex, title }] }
 const hoverables = [];      // meshes with userData.action
@@ -112,7 +113,8 @@ function clearBoards() {
 }
 
 function makeBoard(space, agents) {
-  const wins = [...space.windows.filter((w) => w.kind === 'terminal'), ...space.windows.filter((w) => w.kind === 'browser'), ...space.windows.filter((w) => w.kind === 'other')].slice(0, 8);
+  const terms = space.windows.filter((w) => w.kind === 'terminal');
+  const wins = [...terms.filter((w) => w.session), ...terms.filter((w) => !w.session), ...space.windows.filter((w) => w.kind === 'browser')].slice(0, 8);
   const rows = Math.max(1, Math.ceil(wins.length / COLS));
   const w = BOARD_PAD * 2 + COLS * PANEL_W + (COLS - 1) * PANEL_GAP;
   const h = BOARD_PAD * 2 + HEADER_H + rows * (PANEL_H + LABEL_H + PANEL_GAP);
@@ -121,10 +123,10 @@ function makeBoard(space, agents) {
   group.add(back);
   const agent = agents[space.agents[0]] || null;
   const color = agent && agent.color ? agent.color : '#3a3a44';
-  const headerTex = textTexture(agent ? `${agent.name}` : `Desktop ${space.index + 1}`, { width: 768, height: 96, bg: color, fg: ink(color), font: 'bold 44px -apple-system, system-ui, sans-serif', align: 'center' });
+  const headerTex = textTexture(space.agents.join(' · '), { width: 768, height: 96, bg: color, fg: ink(color), font: 'bold 44px -apple-system, system-ui, sans-serif', align: 'center' });
   const header = new THREE.Mesh(new THREE.PlaneGeometry(w - BOARD_PAD * 2, HEADER_H), new THREE.MeshBasicMaterial({ map: headerTex }));
   header.position.set(0, h / 2 - BOARD_PAD - HEADER_H / 2, 0.003);
-  header.userData = { action: 'space', space: space.id, label: agent ? agent.name : `Desktop ${space.index + 1}` };
+  header.userData = { action: 'space', space: space.id, label: space.agents.join(' · ') };
   group.add(header); hoverables.push(header);
   const panels = [];
   wins.forEach((win, i) => {
@@ -153,7 +155,7 @@ function makeBoard(space, agents) {
 function placeBoards() {
   const n = boards.length;
   if (!n) return;
-  if (layout === 'wall') {
+  if (false) {   // (the wall layout is retired: the ring is the view)
     const cols = Math.min(4, n), colW = Math.max(...boards.map((b) => b.w)) + 0.12;
     const rowsH = [];
     boards.forEach((b, i) => { const r = Math.floor(i / cols); rowsH[r] = Math.max(rowsH[r] || 0, b.h); });
@@ -191,11 +193,11 @@ function buildWorld() {
   clearBoards();
   if (!world || !world.displays[0]) return;
   const agents = Object.fromEntries(world.agents.map((a) => [a.name, a]));
-  for (const s of world.displays[0].spaces) if (s.agents.length || s.windows.length) makeBoard(s, agents);
+  for (const s of world.displays[0].spaces) if (s.agents.length) makeBoard(s, agents);   // agents only
   if (!focusedSpace || !boards.some((b) => b.space.id === focusedSpace)) { const c = world.displays[0].spaces.find((s) => s.current); focusedSpace = c ? c.id : null; }
   placeBoards();
   if (stage && !boards.some((b) => b.panels.some((p) => p.wid === stage.wid))) closeStage();
-  hud.textContent = `LAS Spaces — ${boards.length} boards · ${layout} · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · trigger: open · grip: layout · stick: turn · B/Y: close`;
+  hud.textContent = `LAS Spaces — ${boards.length} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · header: select · panel: open big + type into it · stick: scroll · A/B: close`;
 }
 
 // ── the stage: one window, big and live, in front of you ────────────────────
@@ -286,7 +288,6 @@ const controllers = [0, 1].map((i) => {
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0x8ab4ff }));
   line.scale.z = 4; c.add(line);
   c.addEventListener('selectstart', () => act(pick(c)));
-  c.addEventListener('squeezestart', () => toggleLayout());
   scene.add(c);
   return c;
 });
@@ -303,8 +304,6 @@ function pick(controller) {
 const mouse = new THREE.Vector2(-2, -2);
 window.addEventListener('pointermove', (e) => { mouse.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1); });
 window.addEventListener('click', (e) => { if (renderer.xr.isPresenting) return; raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; act(hit ? hit.object : null); });
-window.addEventListener('keydown', (e) => { if (e.key === 'l') toggleLayout(); });
-function toggleLayout() { layout = layout === 'ring' ? 'wall' : 'ring'; localStorage.setItem('las-spaces-layout', layout); placeBoards(); hud.textContent = hud.textContent.replace(/ring|wall/, layout); }
 
 let busy = false;
 async function act(obj) {
@@ -318,8 +317,8 @@ async function act(obj) {
     if (panel) openStage(panel, u.label);
     r = await post(`/window/${u.wid}/focus`);
   } else {
-    focusedSpace = u.space; ringOffset = 0; placeBoards();
-    r = await post(`/space/${u.space}/activate`);
+    focusedSpace = u.space; ringOffset = 0; placeBoards();   // selected: big in the middle; the Mac is left alone
+    r = { ok: true, selected: u.label };
   }
   report({ act: u.action, label: u.label, result: r });
   busy = false;
@@ -329,7 +328,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowRight') { ringOffset -= 0.12; placeBoards(); }
   if (e.key === 'Escape') closeStage();
 });
-// Thumbstick turns the ring; B/Y closes the stage; A/X toggles the layout.
+// Thumbstick scrolls the ring; A/X or B/Y closes the stage.
 const padState = new Map();
 let lastTick = performance.now();
 function pollGamepads() {
@@ -342,8 +341,7 @@ function pollGamepads() {
     if (Math.abs(x) > 0.25) { ringOffset -= x * dt * 1.6; placeBoards(); }
     const prev = padState.get(src) || {};
     const b4 = gp.buttons[4] && gp.buttons[4].pressed, b5 = gp.buttons[5] && gp.buttons[5].pressed;
-    if (b4 && !prev.b4) toggleLayout();
-    if (b5 && !prev.b5) closeStage();
+    if ((b4 && !prev.b4) || (b5 && !prev.b5)) closeStage();
     padState.set(src, { b4, b5 });
   }
 }
