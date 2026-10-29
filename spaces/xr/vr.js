@@ -112,6 +112,7 @@ function applyTexture(mesh, tex, aspect, width = null) {
     mesh.geometry.dispose(); mesh.geometry = new THREE.PlaneGeometry(width, h);
     if (mesh.children[0]) { mesh.children[0].geometry.dispose(); mesh.children[0].geometry = new THREE.PlaneGeometry(width + 0.04, h + 0.04); }
     if (mesh.children[1]) mesh.children[1].position.y = h / 2 + 0.05;
+    if (stage && mesh === stage.mesh) placeHandles();
   }
 }
 function disposeObject(o) { o.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } if (c.geometry) c.geometry.dispose(); }); }
@@ -135,13 +136,14 @@ function agentWindows(agent) {
 function makeFlower(agent) {
   const color = new THREE.Color(agent.color || '#90c060');
   const group = new THREE.Group();
-  const sphere = new THREE.Mesh(new THREE.SphereGeometry(FLOWER.bubbleR, 32, 24), new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.05, emissive: color, emissiveIntensity: 0.18 }));
+  // A plain circle in the widget's color (no shading: the color IS the identity).
+  const sphere = new THREE.Mesh(new THREE.CircleGeometry(FLOWER.bubbleR, 48), new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }));
   sphere.userData = { action: 'agent', name: agent.name, label: agent.name };
   group.add(sphere); hoverables.push(sphere);
   const label = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(agent.name, { width: 512, height: 84, fg: '#fff', font: 'bold 44px -apple-system, system-ui, sans-serif', align: 'center' }), transparent: true }));
   label.position.y = -FLOWER.bubbleR - 0.06;
   group.add(label);
-  const f = { group, sphere, label, agent, target: new THREE.Vector3(), phase: Math.random() * Math.PI * 2, speech: null };
+  const f = { group, sphere, label, agent, color: agent.color || '#90c060', target: new THREE.Vector3(), phase: Math.random() * Math.PI * 2, speech: null, title: null };
   flowers.set(agent.name, f);
   scene.add(group);
   return f;
@@ -155,7 +157,18 @@ function layoutFlower() {
     const a = -Math.PI / 2 + (i / petals.length) * Math.PI * 2;   // from the top, clockwise
     flowers.get(n).target.set(Math.cos(a) * r, EYE_Y + Math.sin(a) * r * 0.78, FLOWER.z);
   });
-  if (selected && flowers.has(selected)) flowers.get(selected).target.set(0, EYE_Y + 0.02, FLOWER.z + 0.1);
+  for (const [n, f] of flowers) {
+    const isSel = n === selected;
+    f.sphere.visible = !isSel; f.label.visible = !isSel;
+    if (isSel) f.target.set(0, EYE_Y + 0.02, FLOWER.z + 0.1);   // the group stays as the anchor for its speech bubble
+    if (f.title) { f.group.remove(f.title); disposeObject(f.title); const i = hoverables.indexOf(f.title); if (i !== -1) hoverables.splice(i, 1); f.title = null; }
+    if (isSel) {
+      const title = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.11), new THREE.MeshBasicMaterial({ map: textTexture(n, { width: 1024, height: 128, bg: f.color, fg: ink(f.color), font: 'bold 64px -apple-system, system-ui, sans-serif', align: 'center' }) }));
+      title.position.set(0, MOSAIC_R * 0.72 + PANEL_H / 2 + 0.14, 0);
+      title.userData = { action: 'agent', name: n, label: n };
+      f.group.add(title); hoverables.push(title); f.title = title;
+    }
+  }
 }
 
 function clearPanels() {
@@ -196,12 +209,12 @@ function buildWorld() {
     const f = flowers.get(a.name);
     if (f) { f.agent = a; } else makeFlower(a);
   }
-  for (const [name, f] of flowers) if (!seen.has(name)) { scene.remove(f.group); disposeObject(f.group); const i = hoverables.indexOf(f.sphere); if (i !== -1) hoverables.splice(i, 1); flowers.delete(name); }
+  for (const [name, f] of flowers) if (!seen.has(name)) { scene.remove(f.group); disposeObject(f.group); for (const o of [f.sphere, f.title]) { const i = hoverables.indexOf(o); if (i !== -1) hoverables.splice(i, 1); } flowers.delete(name); }
   if (selected && !flowers.has(selected)) selected = null;
   layoutFlower();
   buildMosaic();
   if (stage && !panels.some((p) => p.wid === stage.wid)) closeStage();
-  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · bubble: select · panel: open big · on the stage: point = pointer, trigger = click, stick = scroll, keys below · A/B: close`;
+  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · circle: select · tile: big · big view: trigger clicks, stick scrolls, grip a corner to resize, keys below · A/B: close`;
 }
 
 function select(name) {
@@ -220,7 +233,8 @@ function speech(agentName, text, phase) {
   const { tex, aspect } = bubbleTexture(text, f.agent.color || '#90c060');
   const w = 0.6, h = w / aspect;
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
-  mesh.position.set(0, FLOWER.bubbleR + h / 2 + 0.04, 0.02);
+  const base = f.title ? f.title.position.y + 0.06 : FLOWER.bubbleR;
+  mesh.position.set(0, base + h / 2 + 0.04, 0.02);
   f.group.add(mesh); f.speech = mesh;
 }
 
@@ -236,15 +250,36 @@ function openStage(panel, label) {
   const title = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(label, { width: 1536, height: 64, font: '34px -apple-system, system-ui, sans-serif', fg: '#fff' }), transparent: true }));
   title.position.y = STAGE_WIDTH_M * 9 / 32 + 0.05; mesh.add(title);
   scene.add(mesh); hoverables.push(mesh);
-  stage = { wid: panel.wid, mesh, kind: panel.kind, loading: false, at: 0, aspectSet: false };
+  // Four corner handles: grip one and move the controller to resize (aspect kept).
+  const handles = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) => {
+    const h = new THREE.Mesh(new THREE.CircleGeometry(0.035, 24), new THREE.MeshBasicMaterial({ color: 0x8ab4ff, side: THREE.DoubleSide }));
+    h.userData = { action: 'resize', sx, sy, label: 'resize' };
+    mesh.add(h); hoverables.push(h);
+    return h;
+  });
+  stage = { wid: panel.wid, mesh, handles, kind: panel.kind, loading: false, at: 0, aspectSet: false, focused: false };
+  placeHandles();
   buildKeyboard();
   const tt = panel.kind === 'terminal' ? termTex.get(panel.wid) : null;
   if (tt) { applyTexture(mesh, tt.tex, tt.aspect, STAGE_WIDTH_M); stage.aspectSet = true; }
 }
+function placeHandles() {
+  if (!stage) return;
+  const g = stage.mesh.geometry.parameters;
+  for (const h of stage.handles) h.position.set(h.userData.sx * g.width / 2, h.userData.sy * g.height / 2, 0.004);
+}
+/** The Mac must have this window in front before any pointer or key reaches it — done once, on the first real interaction. */
+async function ensureFocused() {
+  if (!stage || stage.focused) return true;
+  const r = await post(`/window/${stage.wid}/focus`);
+  if (stage) stage.focused = Boolean(r && r.ok);
+  report({ act: 'focus-for-input', wid: stage && stage.wid, result: r });
+  return Boolean(r && r.ok);
+}
 function closeStage() {
   if (!stage) return;
   scene.remove(stage.mesh);
-  const i = hoverables.indexOf(stage.mesh); if (i !== -1) hoverables.splice(i, 1);
+  for (const o of [stage.mesh, ...stage.handles]) { const i = hoverables.indexOf(o); if (i !== -1) hoverables.splice(i, 1); }
   disposeObject(stage.mesh);
   if (hovered === stage.mesh) setHovered(null);
   stage = null;
@@ -293,6 +328,8 @@ const controllers = [0, 1].map((i) => {
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0x8ab4ff }));
   line.scale.z = 4; c.add(line);
   c.addEventListener('selectstart', () => { const hit = pickHit(c); act(hit ? hit.object : null, uvOf(hit)); });
+  c.addEventListener('squeezestart', () => startResize(c));
+  c.addEventListener('squeezeend', () => { resizing = null; });
   scene.add(c);
   return c;
 });
@@ -317,18 +354,24 @@ let busy = false;
 async function act(obj, uv = null) {
   if (!obj || busy) return;
   const u = obj.userData;
-  if (u.action === 'stage') { if (uv) post('/input', { wid: u.wid, type: 'click', ...uv }); return; }
+  if (u.action === 'stage') { if (uv && await ensureFocused()) post('/input', { wid: u.wid, type: 'click', ...uv }); return; }
+  if (u.action === 'resize') return;   // resizing is a grip, not a trigger
   if (u.action === 'key') { pressKey(u); return; }
   if (u.action === 'agent') { select(u.name); report({ act: 'select', label: u.name }); return; }
-  busy = true;
   const panel = panels.find((p) => p.wid === u.wid);
-  if (panel) openStage(panel, u.label);
-  const r = await post(`/window/${u.wid}/focus`);
-  report({ act: 'open', label: u.label, result: r });
-  busy = false;
+  if (panel) openStage(panel, u.label);   // big here; the Mac is touched only when you click or type into it
+  report({ act: 'open', label: u.label });
 }
 const padState = new Map();
 let lastMoveAt = 0, lastScrollAt = 0;
+let resizing = null;   // { controller, plane, center, startDist, startScale }
+function startResize(controller) {
+  const hit = pickHit(controller);
+  if (!stage || !hit || hit.object.userData.action !== 'resize') return;
+  const center = new THREE.Vector3(); stage.mesh.getWorldPosition(center);
+  const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(stage.mesh.getWorldQuaternion(new THREE.Quaternion()));
+  resizing = { controller, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(normal, center), center, startDist: hit.point.distanceTo(center), startScale: stage.mesh.scale.x };
+}
 function pollGamepads() {
   const session = renderer.xr.getSession();
   if (!session) return;
@@ -342,10 +385,22 @@ function pollGamepads() {
     // pointing at the stage: the Mac's pointer follows; the thumbstick scrolls
     if (stage && now - lastScrollAt > 90) {
       const y = gp.axes[3] || 0;
-      if (Math.abs(y) > 0.3) { const c = controllers[src.handedness === 'left' ? 0 : 1]; const uv = uvOf(c && pickHit(c)); if (uv) { lastScrollAt = now; post('/input', { wid: stage.wid, type: 'scroll', ...uv, dx: 0, dy: y * 60 }); } }
+      if (Math.abs(y) > 0.3 && stage.focused) { const c = controllers[src.handedness === 'left' ? 0 : 1]; const uv = uvOf(c && pickHit(c)); if (uv) { lastScrollAt = now; post('/input', { wid: stage.wid, type: 'scroll', ...uv, dx: 0, dy: y * 60 }); } }
     }
   }
-  if (stage && hovered === stage.mesh && now - lastMoveAt > 80) {
+  if (resizing) {
+    const c = resizing.controller;
+    tmpM.identity().extractRotation(c.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(c.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
+    const hit = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(resizing.plane, hit)) {
+      const d = hit.distanceTo(resizing.center);
+      const sc = THREE.MathUtils.clamp(resizing.startScale * d / Math.max(0.05, resizing.startDist), 0.4, 3.5);
+      stage.mesh.scale.setScalar(sc);
+    }
+  }
+  if (stage && stage.focused && hovered === stage.mesh && now - lastMoveAt > 80) {
     for (const c of controllers) { const hit = pickHit(c); if (hit && hit.object === stage.mesh) { lastMoveAt = now; post('/input', { wid: stage.wid, type: 'move', ...uvOf(hit) }); break; } }
   }
 }
@@ -410,10 +465,11 @@ function destroyKeyboard() {
   disposeObject(keyboard.group);
   keyboard = null;
 }
-function pressKey(u) {
+async function pressKey(u) {
   if (!stage) return;
   const def = u.def;
   if (def && def.mod) { mods[def.mod] = !mods[def.mod]; paintKeys(); return; }
+  if (!(await ensureFocused())) return;
   const active = ['shift', 'ctrl', 'command'].filter((m) => mods[m]);
   const text = typeof def === 'string' ? (mods.shift ? def.toUpperCase() : def) : Array.isArray(def) ? (mods.shift ? def[1] : def[0]) : def.text;
   if (def && def.key) post('/input', { wid: stage.wid, type: 'key', key: def.key, mods: active.map((m) => (m === 'ctrl' ? 'control' : m)) });
@@ -439,8 +495,7 @@ renderer.setAnimationLoop(() => {
   for (const f of flowers.values()) {
     f.group.position.lerp(f.target, 0.08);
     f.group.position.y += Math.sin(t * 1.3 + f.phase) * 0.0025;
-    const s = f.agent.name === selected ? 1.35 : 1;
-    f.sphere.scale.setScalar(THREE.MathUtils.lerp(f.sphere.scale.x, hovered === f.sphere ? s * 1.12 : s, 0.2));
+    f.sphere.scale.setScalar(THREE.MathUtils.lerp(f.sphere.scale.x, hovered === f.sphere ? 1.12 : 1, 0.2));
     f.group.lookAt(0, EYE_Y, 0);
   }
   let h = null;
