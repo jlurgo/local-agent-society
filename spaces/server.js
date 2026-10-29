@@ -62,14 +62,35 @@ async function tickWorld() {
   }
 }
 
-// ── thumbnails: one capture per window per TTL, never two of the same at once ──
+// ── thumbnails: one capture per window per TTL, never two of the same at once,
+// and never more than CAPTURE_CONCURRENCY captures in flight at all: a page
+// asking for every panel at once must not take the Mac's cores (seen: 2
+// cores, load 60). Beyond CAPTURE_QUEUE_MAX waiting, new asks are refused
+// (the page simply shows the last frame a little longer).
+const CAPTURE_CONCURRENCY = 2;
+const CAPTURE_QUEUE_MAX = 24;
+let inFlight = 0;
+const waiting = [];
+function pump() {
+  while (inFlight < CAPTURE_CONCURRENCY && waiting.length) {
+    const job = waiting.shift();
+    inFlight++;
+    mac.captureWindow(job.wid, { maxWidth: job.w })
+      .then(job.resolve, (err) => { warn('thumb', `${job.wid}: ${err && err.message ? err.message : err}`); job.resolve(null); })
+      .finally(() => { inFlight--; pump(); });
+  }
+}
+function capture(wid, w) {
+  if (waiting.length >= CAPTURE_QUEUE_MAX) return Promise.resolve(null);
+  return new Promise((resolve) => { waiting.push({ wid, w, resolve }); pump(); });
+}
 const thumbs = new Map();   // key → { at, promise }
 function thumb(wid, w, live = false) {
   const key = `${wid}:${w}`;
   const c = thumbs.get(key);
   const now = Date.now();
   if (c && now - c.at < (live ? LIVE_TTL_MS : THUMB_TTL_MS)) return c.promise;
-  const promise = mac.captureWindow(wid, { maxWidth: w }).catch((err) => { warn('thumb', `${wid}: ${err && err.message ? err.message : err}`); return null; });
+  const promise = capture(wid, w);
   thumbs.set(key, { at: now, promise });
   if (thumbs.size > 400) thumbs.delete(thumbs.keys().next().value);
   return promise;

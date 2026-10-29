@@ -221,14 +221,21 @@ function refresh(panel, live) {
     panel.loading = false; panel.at = performance.now();
   }, undefined, () => { panel.loading = false; panel.at = performance.now(); });
 }
+// Refresh budget (the Mac pays for every capture): the pointed panel and the
+// stage live; the focused board's panels every 3 s; every other board's
+// every 12 s, and only while its panels can be seen.
 setInterval(() => {
   refreshStage();
   const now = performance.now();
-  for (const b of boards) for (const p of b.panels) {
-    const live = hovered && hovered.userData.wid === p.wid;
-    if (live ? now - p.at > 300 : now - p.at > 3000) refresh(p, live);
+  for (const b of boards) {
+    const focused = b.space.id === focusedSpace;
+    for (const p of b.panels) {
+      const live = hovered && hovered.userData.wid === p.wid;
+      const every = live ? 350 : focused ? 3000 : 12000;
+      if (now - p.at > every) refresh(p, live);
+    }
   }
-}, 150);
+}, 200);
 
 // ── pointing: XR controllers, and the mouse when flat ──────────────────────
 const raycaster = new THREE.Raycaster();

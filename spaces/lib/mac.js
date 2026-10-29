@@ -125,6 +125,67 @@ function displaySpaces() {
   return out;
 }
 
+// ── native scale + JPEG: CoreGraphics draws the capture into a smaller bitmap
+// context, ImageIO encodes it — no pixel loop in JS, no sharp. The sharp path
+// below stays as the fallback.
+const io = koffi.load('/System/Library/Frameworks/ImageIO.framework/ImageIO');
+const CGColorSpaceCreateDeviceRGB = cg.func('void* CGColorSpaceCreateDeviceRGB()');
+const CGBitmapContextCreate = cg.func('void* CGBitmapContextCreate(void*, size_t, size_t, size_t, size_t, void*, uint32_t)');
+const CGContextSetInterpolationQuality = cg.func('void CGContextSetInterpolationQuality(void*, int)');
+const CGContextDrawImage = cg.func('void CGContextDrawImage(void*, double, double, double, double, void*)');
+const CGBitmapContextCreateImage = cg.func('void* CGBitmapContextCreateImage(void*)');
+const CGContextRelease = cg.func('void CGContextRelease(void*)');
+const CFDataCreateMutable = cf.func('void* CFDataCreateMutable(void*, long)');
+const CGImageDestinationCreateWithData = io.func('void* CGImageDestinationCreateWithData(void*, void*, size_t, void*)');
+const CGImageDestinationAddImage = io.func('void CGImageDestinationAddImage(void*, void*, void*)');
+const CGImageDestinationFinalize = io.func('bool CGImageDestinationFinalize(void*)');
+const CFDictionaryCreate = cf.func('void* CFDictionaryCreate(void*, void**, void**, long, void*, void*)');
+const kCGBitmapInfoBGRA = 6 | (2 << 12);   // kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little
+const kCGInterpolationMedium = 2;
+let rgbSpace = null;
+let jpegProps = null;   // { kCGImageDestinationLossyCompressionQuality: 0.72 }
+function jpegProperties() {
+  if (jpegProps) return jpegProps;
+  try {
+    const kq = key('kCGImageDestinationLossyCompressionQuality');
+    const qb = Buffer.alloc(8); qb.writeDoubleLE(0.72, 0);
+    const q = CFNumberCreate(null, kCFNumberDoubleType, qb);
+    const ks = koffi.alloc('void*', 1); koffi.encode(ks, 'void*', kq);
+    const vs = koffi.alloc('void*', 1); koffi.encode(vs, 'void*', q);
+    // CFType callbacks: the exported globals kCFTypeDictionary{Key,Value}CallBacks
+    const kcb = cf.symbol('kCFTypeDictionaryKeyCallBacks', 'void'), vcb = cf.symbol('kCFTypeDictionaryValueCallBacks', 'void');
+    jpegProps = CFDictionaryCreate(null, ks, vs, 1, kcb, vcb);
+  } catch (err) {
+    jpegProps = null;   // ImageIO's default quality then
+  }
+  return jpegProps;
+}
+
+/** Scale a CGImage to at most maxWidth and encode it as JPEG, all in CoreGraphics/ImageIO. */
+function scaleAndEncode(img, width, height, maxWidth) {
+  const outW = Math.min(maxWidth, width), outH = Math.max(1, Math.round(height * outW / width));
+  rgbSpace ||= CGColorSpaceCreateDeviceRGB();
+  const ctx = CGBitmapContextCreate(null, outW, outH, 8, outW * 4, rgbSpace, kCGBitmapInfoBGRA);
+  if (!ctx) throw new Error('CGBitmapContextCreate failed');
+  let scaled = null, data = null, dest = null;
+  try {
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+    CGContextDrawImage(ctx, 0, 0, outW, outH, img);
+    scaled = CGBitmapContextCreateImage(ctx);
+    data = CFDataCreateMutable(null, 0);
+    dest = CGImageDestinationCreateWithData(data, key('public.jpeg'), 1, null);
+    if (!dest) throw new Error('CGImageDestinationCreateWithData failed');
+    CGImageDestinationAddImage(dest, scaled, jpegProperties());
+    if (!CGImageDestinationFinalize(dest)) throw new Error('CGImageDestinationFinalize failed');
+    const len = Number(CFDataGetLength(data));
+    const jpeg = Buffer.from(koffi.decode(CFDataGetBytePtr(data), 'uint8_t', len));
+    return { jpeg, width: outW, height: outH };
+  } finally {
+    for (const r of [dest, data, scaled]) if (r) CFRelease(r);
+    CGContextRelease(ctx);
+  }
+}
+
 /**
  * The window's pixels as a JPEG, from whichever Space it is on.
  * @returns {Promise<{jpeg: Buffer, width: number, height: number, srcWidth: number, srcHeight: number}|null>}
@@ -136,6 +197,14 @@ async function captureWindow(wid, { maxWidth = 480, quality = 70 } = {}) {
   try {
     const width = Number(CGImageGetWidth(img)), height = Number(CGImageGetHeight(img)), bpr = Number(CGImageGetBytesPerRow(img));
     if (!width || !height) return null;
+    if (!process.env.LAS_SPACES_SHARP) {
+      try {
+        const r = scaleAndEncode(img, width, height, maxWidth);
+        return { ...r, srcWidth: width, srcHeight: height };
+      } catch (err) {
+        if (!scaleAndEncode.warned) { scaleAndEncode.warned = true; console.warn('[spaces] native JPEG path failed, using sharp:', err.message); }
+      }
+    }
     data = CGDataProviderCopyData(CGImageGetDataProvider(img));
     const len = Number(CFDataGetLength(data));
     const bytes = koffi.decode(CFDataGetBytePtr(data), 'uint8_t', len);

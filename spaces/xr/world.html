@@ -94,7 +94,7 @@
         next.onerror = () => { delete img.dataset.loading; };
         next.src = `/thumb/${img.dataset.wid}?w=400&t=${Date.now()}`;
       }
-    }, 3000);
+    }, 6000);
 
     spacesEl.addEventListener('click', async (e) => {
       const head = e.target.closest('.head'), win = e.target.closest('.win');
