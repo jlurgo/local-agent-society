@@ -170,6 +170,7 @@ function applyTexture(mesh, tex, aspect, width = null) {
     mesh.geometry.dispose(); mesh.geometry = new THREE.PlaneGeometry(width, h);
     if (mesh.children[0]) { mesh.children[0].geometry.dispose(); mesh.children[0].geometry = new THREE.PlaneGeometry(width + 0.04, h + 0.04); }
     if (mesh.children[1]) mesh.children[1].position.y = h / 2 + 0.05;
+    if (mesh.children[2]) mesh.children[2].position.y = h / 2 + 0.05 + 0.035 + 0.05 + 0.02;
   }
 }
 
@@ -178,7 +179,14 @@ let world = null;
 let selected = null;
 const flowers = new Map();   // name → { group, circle, label, agent, color, target, phase, speech, title, talking, talkText }
 const panels = [];           // the selected agent's mosaic
-const screens = [];          // open windows, big: { wid, mesh, handles, kind, loading, at, aspectSet, focused }
+const screens = [];          // open windows, big: { wid, mesh, handles, kind, loading, at, aspectSet, focused, agent, color }
+// Where you put a screen (position in root space, scale) is remembered per agent + window and used when it is opened again.
+const screenMemory = new Map();
+try { for (const [k, v] of Object.entries(JSON.parse(localStorage.getItem('las-spaces-screens') || '{}'))) screenMemory.set(k, v); } catch { /* fresh */ }
+function rememberScreen(sc) {
+  screenMemory.set(`${sc.agent}:${sc.wid}`, { p: sc.mesh.position.toArray(), s: sc.mesh.scale.x });
+  try { localStorage.setItem('las-spaces-screens', JSON.stringify(Object.fromEntries([...screenMemory].slice(-200)))); } catch { /* ignore */ }
+}
 let activeScreen = null;
 const hoverables = [];
 let hovered = null;
@@ -352,12 +360,16 @@ function openScreen(panel, label) {
   frame.position.z = -0.003; mesh.add(frame);
   const title = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH_M, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(label, { width: 1536, height: 64, font: '34px -apple-system, system-ui, sans-serif', fg: '#fff' }), transparent: true }));
   title.position.y = SCREEN_WIDTH_M * 9 / 32 + 0.05; mesh.add(title);
+  const agentName = selected || '', color = (selected && flowers.get(selected) && flowers.get(selected).color) || '#3a3a44';
+  const bar = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH_M, 0.1), new THREE.MeshBasicMaterial({ map: textTexture(agentName, { width: 1536, height: 96, bg: color, fg: ink(color), font: 'bold 60px -apple-system, system-ui, sans-serif', align: 'center' }) }));
+  bar.position.y = title.position.y + 0.035 + 0.05 + 0.02; mesh.add(bar);
   const handles = [];
   root.add(mesh); hoverables.push(mesh);
-  const sc = { wid: panel.wid, mesh, handles, kind: panel.kind, loading: false, at: 0, aspectSet: false, focused: false };
+  const sc = { wid: panel.wid, mesh, handles, kind: panel.kind, loading: false, at: 0, aspectSet: false, focused: false, agent: agentName, color };
   screens.push(sc); activeScreen = sc;
-  // new screens open where you look, stepping to the side of ones already there
-  place(mesh, headYaw + (screens.length - 1) * 0.5 - (screens.length - 1) * 0.25, headPitch * 0.5, SCREEN_DIST);
+  const mem = screenMemory.get(`${agentName}:${panel.wid}`);
+  if (mem) { mesh.position.fromArray(mem.p); mesh.scale.setScalar(mem.s || 1); mesh.lookAt(viewerWorld); }
+  else place(mesh, headYaw + (screens.length - 1) * 0.5 - (screens.length - 1) * 0.25, headPitch * 0.5, SCREEN_DIST);   // where you look, aside of ones already open
   const tt = panel.kind === 'terminal' ? termTex.get(panel.wid) : null;
   if (tt) { applyTexture(mesh, tt.tex, tt.aspect, SCREEN_WIDTH_M); sc.aspectSet = true; }
   if (!keyboard) buildKeyboard();
@@ -547,6 +559,8 @@ function startGrab(controller) {
   }
 }
 function endGrab(controller) {
+  const g = grabs.get(controller);
+  if (g && g.kind === 'screen') rememberScreen(g.screen);
   grabs.delete(controller); twoHand = null;
   for (const [c, g] of grabs) { g.start = ctrlPos(c); g.objStart = g.obj.position.clone(); }
   saveRoot();
