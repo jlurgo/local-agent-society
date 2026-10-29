@@ -120,6 +120,12 @@ function createBubbles({ sources, log, onAction }) {
     relayout(b.stack, b.displayId);
   }
 
+  function closeSoon(b, ms) {
+    b.closing = true;
+    clearTimeout(b.timer);
+    b.timer = setTimeout(() => close(b), ms);
+  }
+
   function armTimer(b) {
     // A bubble on its way out keeps its close timer: a hover (pin) after
     // 'sent' must not cancel it — that left a bubble nobody could dismiss.
@@ -168,7 +174,7 @@ function createBubbles({ sources, log, onAction }) {
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-    const b = { win, agentName, side, stack: stackKey, anchor, speakId, displayId, height: BUBBLE_MIN_HEIGHT, timer: null, pinned: false, voice: false, closing: false };
+    const b = { win, agentName, side, stack: stackKey, anchor, speakId, displayId, height: BUBBLE_MIN_HEIGHT, timer: null, pinned: false, voice: false, closing: false, ended: false };
     bubbles.push(b);
     win.loadFile(path.join(sources.bubbleDir, 'bubble.html'), {
       query: { agent: agentName, text, color, opacity: String(opacity), side },
@@ -198,6 +204,7 @@ function createBubbles({ sources, log, onAction }) {
         return;
       case 'pin':
         b.pinned = Boolean(payload.on);
+        if (!b.pinned && b.ended && !b.voice) { closeSoon(b, 3000); return; }   // the voice finished while hovered: go once the pointer leaves
         armTimer(b);
         return;
       case 'dismiss':
@@ -263,10 +270,9 @@ function createBubbles({ sources, log, onAction }) {
   function speakEnded(speakId) {
     for (const b of bubbles) {
       if (b.speakId !== speakId || b.closing || b.win.isDestroyed()) continue;
-      if (b.pinned || b.voice) continue;
-      b.closing = true;
-      clearTimeout(b.timer);
-      b.timer = setTimeout(() => close(b), 800);
+      b.ended = true;
+      if (b.pinned || b.voice) continue;   // in use: it goes 3 s after the pointer leaves ('pin' off), or with the dictation
+      closeSoon(b, 800);
     }
   }
 
