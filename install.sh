@@ -5,11 +5,32 @@
 set -e
 
 INSTALL_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-FAMILY="${1:-System}"
+FAMILY="${1:-LocalAgentSociety}"
+
+# ── 0. Node >= 22.12 ──────────────────────────────────────────────────────────
+# Everything below runs node: the widget build (@electron/rebuild and node-abi
+# need >=22.12), the bridge, and vortexia, whose launchd plist pins whichever
+# `node` is first on PATH (vortexia/scripts/install-service.sh). Node 20 has no
+# global WebSocket, so vortex-relay's Nostr transport fails every relay on it —
+# on uy-mac an nvm v20 came first and every Name@env send went 404. Pick a
+# recent node (Homebrew's arm64 first) and put it first on PATH for the rest.
+node_ok() {
+    "$1" -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=12)?0:1)' 2>/dev/null
+}
+NODE_BIN=""
+for candidate in /opt/homebrew/bin/node "$(command -v node 2>/dev/null)" "$HOME"/.nvm/versions/node/v*/bin/node /usr/local/bin/node; do
+    if [ -x "$candidate" ] && node_ok "$candidate"; then NODE_BIN="$candidate"; break; fi
+done
+if [ -z "$NODE_BIN" ]; then
+    echo "ERROR: no Node >= 22.12 found (Homebrew, PATH, nvm). Install one — brew install node — and re-run." >&2
+    exit 1
+fi
+export PATH="$( dirname "$NODE_BIN" ):$PATH"
 
 echo "Local Agent Society — installing"
 echo "  Directory : $INSTALL_DIR"
 echo "  Agent     : $FAMILY"
+echo "  Node      : $NODE_BIN ($("$NODE_BIN" --version))"
 echo ""
 
 # ── 1. Build the Electron widget app bundle ───────────────────────────────────
