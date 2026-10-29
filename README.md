@@ -281,8 +281,8 @@ screen; the widget's own name/log stay visible above it:
 - **Mute**
 - **Expand when hidden** (on by default) — while occluded/off-Space, the
   widget balloons to a big, click-through, full-screen name banner instead
-  of just disappearing; shrinks back `RESTORE_DELAY_MS` (2s by default,
-  `widget-electron/renderer/widget.js`) after becoming visible again.
+  of just disappearing; shrinks back once its Space is on screen again (see
+  **Shrink delay** below).
   When several widgets share the same macOS Space, they tile that Space's
   screen as a mosaic (halves for 2, one of five layouts for 3, a 2-column
   grid for 4+) instead of overlapping — grouped per `(display, Space)`, not
@@ -291,6 +291,13 @@ screen; the widget's own name/log stay visible above it:
 - **Wake up via vortexia** — lets `las agent focus` wake this agent from
   inactive (see the CLI table above) instead of reporting "not found".
 - **Dictation language**
+- **All widgets → Shrink delay (ms)** (300 by default) — how long a grown
+  widget stays big after you switch back to its Space before it shrinks.
+  Lower is snappier; raise it if it shrinks mid-animation.
+- **All widgets → Heartbeat (ms)** (500 by default) — how often every widget
+  checks which Space it is on. The shrink lands within one heartbeat plus the
+  shrink delay. These two are shared by every widget of the running app, not
+  per agent: change them in any widget's panel and all panels follow.
 
 The agent's name auto-fits its box: it shrinks to the widest size that still
 fits on one line, and if it still doesn't fit, breaks at whichever generic

@@ -37,6 +37,8 @@ const wakeEnabledEl = document.getElementById('wakeEnabled');
 const micLanguageEl = document.getElementById('micLanguage');
 const micTargetEl = document.getElementById('micTarget');
 const ccDefaultEl = document.getElementById('ccDefault');
+const tileShrinkMsEl = document.getElementById('tileShrinkMs');
+const tileTickMsEl = document.getElementById('tileTickMs');
 const doorEl = document.getElementById('door');
 
 document.title = agentName;
@@ -287,6 +289,7 @@ function applyPrefsToDom() {
 async function init() {
   prefs = await window.las.getPrefs(agentName);
   applyPrefsToDom();
+  initTileSettings();
   reportVisibility();   // tells main whether this agent may grow (expandWhenHidden)
   // The mic's target is the agent's own choice (its .las-agent.json), not a
   // window pref — see the children button section.
@@ -400,6 +403,41 @@ async function persist(patch) {
   if (prefs.mute) stopCurrentSpeech();
 }
 
+// ── "All widgets" rows: the tile reconciler's heartbeat and shrink delay ──
+// Not a pref of this agent: one value per app instance, decided in main
+// (see main.js "tile reconciler"), shown identically in every widget's panel.
+function applyTileSettingsToDom(settings) {
+  if (!settings) return;
+  tileShrinkMsEl.value = String(settings.collapseSettleMs);
+  tileTickMsEl.value = String(settings.tickMs);
+}
+
+async function initTileSettings() {
+  try {
+    const s = await window.las.getTileSettings();
+    if (s && s.limits) {
+      [tileShrinkMsEl.min, tileShrinkMsEl.max] = s.limits.collapseSettleMs.map(String);
+      [tileTickMsEl.min, tileTickMsEl.max] = s.limits.tickMs.map(String);
+      tileShrinkMsEl.placeholder = String(s.defaults.collapseSettleMs);
+      tileTickMsEl.placeholder = String(s.defaults.tickMs);
+    }
+    applyTileSettingsToDom(s);
+  } catch (err) {
+    console.warn('[widget] could not read tile settings:', err);
+  }
+}
+
+// 'change' (not 'input'): a value is sent once the field is left or Enter is
+// pressed, never on every keystroke while a number is being typed. Main
+// clamps and answers with what it actually applied.
+tileShrinkMsEl.addEventListener('change', async () => {
+  applyTileSettingsToDom(await window.las.setTileSettings({ collapseSettleMs: tileShrinkMsEl.value }));
+});
+tileTickMsEl.addEventListener('change', async () => {
+  applyTileSettingsToDom(await window.las.setTileSettings({ tickMs: tileTickMsEl.value }));
+});
+window.las.onTileSettings(applyTileSettingsToDom);
+
 colorEl.addEventListener('input', () => persist({ color: colorEl.value }));
 opacityEl.addEventListener('input', () => persist({ opacity: Number(opacityEl.value) }));
 alwaysOnTopEl.addEventListener('change', () => persist({ alwaysOnTop: alwaysOnTopEl.checked }));
@@ -446,7 +484,7 @@ let visibilityDebounce = null;
 // How long to wait, after the widget becomes visible again, before shrinking
 // back down to the compact face — separate from the (short, fixed) debounce
 // on the way INTO occlusion below. Easy to tune: just this one constant.
-const RESTORE_DELAY_MS = 1000;
+const RESTORE_DELAY_MS = 0; // main's reconciler has its own collapse settle; report at once so it reacts at once
 
 // Main decides whether this widget is grown (main.js "tile reconciler": by
 // macOS Space, not by occlusion) — the renderer only reports its visibility,
@@ -466,9 +504,9 @@ document.addEventListener('visibilitychange', () => {
   if (visibilityDebounce) clearTimeout(visibilityDebounce);
   const hidden = document.visibilityState === 'hidden';
   // Going hidden: short debounce, just enough to skip brief flickers (e.g. a
-  // menu momentarily covering the widget). Coming back visible: the longer,
-  // configurable RESTORE_DELAY_MS — don't yank the banner away the instant
-  // you glance back at the Space.
+  // menu momentarily covering the widget). Coming back visible: report at
+  // once (RESTORE_DELAY_MS) — main's reconciler applies its own short
+  // collapse settle, and the user is looking at the banner while it waits.
   visibilityDebounce = setTimeout(() => {
     if (!prefs.expandWhenHidden) return;
     reportVisibility();

@@ -767,15 +767,40 @@ function seedFor(key) {
 // latches compact instead of looping.
 //
 // Calm by design (no hurry: the grown face is only seen in Mission Control):
-// a change of mind must hold TILE_EXPAND_SETTLE_MS / TILE_COLLAPSE_SETTLE_MS
-// before acting, so a Space swipe back and forth or a Mission Control glance
-// never makes a widget pump. Audit: every transition and every miss goes to
-// session/widget.log ([tiles]), and the full current picture to
+// a change of mind must hold TILE_EXPAND_SETTLE_MS / the shrink delay before
+// acting, so a Space swipe back and forth or a Mission Control glance never
+// makes a widget pump. The grow side is what guards against pumping (a quick
+// glance away never grows), so the shrink side can be quick: the user is
+// looking at the banner while it waits. Audit: every transition and every
+// miss goes to session/widget.log ([tiles]), and the full current picture to
 // session/widget-tiles.json.
+//
+// The heartbeat and the shrink delay are user settings ("All widgets" rows
+// of the settings panel): stored once per app instance (electron-store key
+// `tiles`), applied live to every window of that instance (restart of the
+// heartbeat timer + an immediate reconcile), clamped to TILE_SETTINGS_LIMITS.
+// The constants are the defaults; the test suite runs the reconciler with
+// them.
 
-const TILE_TICK_MS = 1500;              // heartbeat
+const TILE_TICK_MS = 500;               // heartbeat default (one CGS read per window per tick — cheap)
 const TILE_EXPAND_SETTLE_MS = 2500;     // off-Space this long before growing (unseen, so no rush)
-const TILE_COLLAPSE_SETTLE_MS = 1200;   // back on screen this long before shrinking
+const TILE_COLLAPSE_SETTLE_MS = 300;    // shrink delay default: back on screen this long before shrinking
+const TILE_SETTINGS_LIMITS = { tickMs: [100, 10000], collapseSettleMs: [0, 30000] };
+const tileSettings = { tickMs: TILE_TICK_MS, collapseSettleMs: TILE_COLLAPSE_SETTLE_MS };
+
+/** Apply a (possibly partial, possibly garbage) settings patch: unknown keys
+ * ignored, non-numbers ignored, numbers clamped and rounded. Returns a copy
+ * of the resulting settings. */
+function applyTileSettings(patch) {
+  for (const key of Object.keys(TILE_SETTINGS_LIMITS)) {
+    if (!patch || typeof patch !== 'object' || !(key in patch)) continue;
+    const n = Number(patch[key]);
+    if (!Number.isFinite(n)) continue;
+    const [lo, hi] = TILE_SETTINGS_LIMITS[key];
+    tileSettings[key] = Math.round(Math.min(hi, Math.max(lo, n)));
+  }
+  return { ...tileSettings };
+}
 const TILE_FLAP_WINDOW_MS = 60 * 1000;  // more than TILE_FLAP_MAX grows in this window...
 const TILE_FLAP_MAX = 4;
 const TILE_FLAP_LATCH_MS = 2 * 60 * 1000; // ...latches the widget compact this long
@@ -936,7 +961,7 @@ function reconcileTiles(now = Date.now()) {
     }
     const grown = occlusionExpandedWindows.has(win);
     if (st.want === grown) continue;
-    if (now - st.since < (st.want ? TILE_EXPAND_SETTLE_MS : TILE_COLLAPSE_SETTLE_MS)) {
+    if (now - st.since < (st.want ? TILE_EXPAND_SETTLE_MS : tileSettings.collapseSettleMs)) {
       pending = true;
       continue;
     }
@@ -956,7 +981,7 @@ function reconcileTiles(now = Date.now()) {
   }
   layoutGrownWidgets();
   writeTilesStatus(now);
-  if (pending) kickTiles(400);
+  if (pending) kickTiles(Math.min(400, tileSettings.tickMs));
 }
 
 let tilesKick = null;
@@ -1879,8 +1904,29 @@ app.whenReady().then(async () => {
   // replacement for the event-driven paths above.
   setInterval(resyncAllOcclusion, 5 * 60 * 1000);
 
-  // The tile reconciler's heartbeat (see "tile reconciler" above).
-  setInterval(() => reconcileTiles(), TILE_TICK_MS);
+  // The tile reconciler's heartbeat (see "tile reconciler" above), at the
+  // user's chosen rate; restarted whenever the rate changes.
+  applyTileSettings(store.get('tiles'));
+  let tileHeartbeat = null;
+  const startTileHeartbeat = () => {
+    if (tileHeartbeat) clearInterval(tileHeartbeat);
+    tileHeartbeat = setInterval(() => reconcileTiles(), tileSettings.tickMs);
+  };
+  startTileHeartbeat();
+  ipcMain.handle('tiles:get', () => ({ ...tileSettings, limits: TILE_SETTINGS_LIMITS, defaults: { tickMs: TILE_TICK_MS, collapseSettleMs: TILE_COLLAPSE_SETTLE_MS } }));
+  ipcMain.handle('tiles:set', (_event, patch) => {
+    const before = { ...tileSettings };
+    const next = applyTileSettings(patch);
+    store.set('tiles', next);
+    if (next.tickMs !== before.tickMs) startTileHeartbeat();
+    log.info('tiles', `settings: heartbeat ${next.tickMs}ms, shrink delay ${next.collapseSettleMs}ms`);
+    kickTiles();
+    // Every window of this instance shows the same two numbers.
+    for (const win of windows.values()) {
+      if (!win.isDestroyed()) win.webContents.send('tiles:changed', next);
+    }
+    return next;
+  });
 
   const explicit = resolveInitialAgentNames(process.argv);
   if (explicit) {

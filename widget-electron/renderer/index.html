@@ -74,6 +74,16 @@
           <option value="auto">Auto-detect</option>
         </select>
       </div>
+      <!-- Shared by every widget (main.js tile reconciler), not per agent. -->
+      <div class="settings-row settings-group">All widgets</div>
+      <div class="settings-row">
+        <label for="tileShrinkMs" title="How long a widget stays big after its Space is back on screen">Shrink delay (ms)</label>
+        <input id="tileShrinkMs" type="number" min="0" max="30000" step="100" />
+      </div>
+      <div class="settings-row">
+        <label for="tileTickMs" title="How often every widget checks which Space it is on">Heartbeat (ms)</label>
+        <input id="tileTickMs" type="number" min="100" max="10000" step="100" />
+      </div>
     </div>
 
     <!-- Drawers: settings above, the Open menu and the children menu below —

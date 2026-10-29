@@ -475,8 +475,34 @@ html, body {
   min-width: 0;
 }
 
+.settings input[type="number"] {
+  width: 5.5em;
+  min-width: 0;
+}
+
+/* A heading row inside the panel ("All widgets"): the rows under it are
+ * app-wide settings, not this agent's. */
+.settings-row.settings-group {
+  justify-content: flex-start;
+  font-weight: 600;
+  opacity: 0.8;
+  min-height: 20px;
+  margin-top: 4px;
+}
+
 .settings select {
-  flex: 1;
+  /* A flex item's default min-width is its content width, so a <select>
+   * whose widest option is a long session label ("Dictation goes to")
+   * could never shrink and pushed out past the panel's edge. Let it shrink
+   * to whatever the row leaves it (Chromium then ellipsizes the shown
+   * value); the short label beside it never wraps or gives way. */
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.settings-row > label {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* Drawers — the "Open" menu and the children menu (and the settings panel,

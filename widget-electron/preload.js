@@ -46,6 +46,14 @@ contextBridge.exposeInMainWorld('las', {
   getPrefs: (name) => ipcRenderer.invoke('prefs:get', name),
   setPrefs: (name, patch) => ipcRenderer.invoke('prefs:set', name, patch),
 
+  /** Tile reconciler settings shared by every widget of this app instance
+   * (main.js "tile reconciler"): heartbeat and shrink delay, in ms. get()
+   * also returns `limits` and `defaults`; set() returns the clamped result. */
+  getTileSettings: () => ipcRenderer.invoke('tiles:get'),
+  setTileSettings: (patch) => ipcRenderer.invoke('tiles:set', patch),
+  /** Another widget changed the tile settings. @param {(settings: object) => void} cb */
+  onTileSettings: (cb) => ipcRenderer.on('tiles:changed', (_e, settings) => cb(settings)),
+
   /** Grow/shrink this window by (dw, dh) pixels — see .resize-handle in widget.css. */
   resizeBy: (dw, dh) => ipcRenderer.send('window:resize-by', dw, dh),
 

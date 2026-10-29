@@ -41,7 +41,7 @@ could absorb them, or stand above them and read what they report.
 
 | Piece | Where | What it supervises | Its audit trail |
 |---|---|---|---|
-| Tile reconciler | `widget-electron/main.js` ("tile reconciler") | Every widget's size and tile, by macOS Space. Runs a 1.5 s heartbeat, verifies and retries, has a flap guard. | `[tiles]` lines in `session/widget.log`, plus `session/widget-tiles.json` |
+| Tile reconciler | `widget-electron/main.js` ("tile reconciler") | Every widget's size and tile, by macOS Space. Runs a heartbeat (0.5 s by default; heartbeat and shrink delay are settable from any widget's settings panel), verifies and retries, has a flap guard. | `[tiles]` lines in `session/widget.log`, plus `session/widget-tiles.json` |
 | Speech queue + speaker lock | `backend/main.py` (`_drain_one`, `/queue/ack`) | One voice at a time, with phases `started` → `playing` (grant) → `done`. One drainer per machine (flock). | `[tts]` lines in `backend/logs/backend.log` and `session/widget.log` |
 | Service entry point | `backend/service.sh` | That launchd, and only launchd, runs the backend. Removes strays. | stdout; launchd logs in `backend/logs/` |
 

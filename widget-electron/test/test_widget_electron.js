@@ -849,7 +849,7 @@ function loadReconciler() {
   const make = new Function(
     'windows', 'spaces', 'screen', 'log', 'ipcMain', 'BrowserWindow', 'fs', 'path', 'SESSION_LOG_PATH',
     'occlusionExpandedWindows', 'collapsedBounds', 'expandedWindows', 'setTimeout',
-    `${section}\nreturn { reconcileTiles, tileStateOf, mosaicTiles, TILE_EXPAND_SETTLE_MS, TILE_COLLAPSE_SETTLE_MS, TILE_FLAP_MAX };`
+    `${section}\nreturn { reconcileTiles, tileStateOf, mosaicTiles, applyTileSettings, tileSettings, TILE_EXPAND_SETTLE_MS, TILE_COLLAPSE_SETTLE_MS, TILE_FLAP_MAX, TILE_SETTINGS_LIMITS };`
   );
   const api = make(env.windows, spaces, screen, log, ipcMain, {}, fakeFs, path, '/tmp/widget.log',
     env.occlusionExpandedWindows, env.collapsedBounds, env.expandedWindows, () => 0);
@@ -951,6 +951,32 @@ test('reconciler: without Space info, an occlusion fight latches compact instead
   grows = r.env.logs.filter(([, m]) => /: grow/.test(m)).length;
   assert.ok(grows <= r.TILE_FLAP_MAX, `grew ${grows} times in a fight — must latch after ${r.TILE_FLAP_MAX}`);
   assert.ok(r.env.logs.some(([lvl, m]) => lvl === 'warn' && /staying compact/.test(m)), 'the latch is logged');
+});
+
+test('reconciler: the shrink delay is a live setting — raising it holds the banner longer', () => {
+  const r = loadReconciler();
+  const win = r.env.add('Tortuga', 1n);
+  r.applyTileSettings({ collapseSettleMs: 5000 });
+  r.env.current = 7n;
+  let t = runFor(r, 0, r.TILE_EXPAND_SETTLE_MS + 1000);
+  assert.ok(r.env.occlusionExpandedWindows.has(win), 'grown off-Space');
+  r.env.current = 1n;
+  t = runFor(r, t, 4000);
+  assert.ok(r.env.occlusionExpandedWindows.has(win), 'still big: the raised shrink delay has not elapsed');
+  runFor(r, t, 2000);
+  assert.ok(!r.env.occlusionExpandedWindows.has(win), 'shrinks once it has');
+});
+
+test('tile settings: a patch is clamped to the limits, garbage is ignored, unknown keys dropped', () => {
+  const r = loadReconciler();
+  assert.deepEqual(r.applyTileSettings(null), { tickMs: r.tileSettings.tickMs, collapseSettleMs: r.tileSettings.collapseSettleMs }, 'null patch: unchanged');
+  const out = r.applyTileSettings({ tickMs: '50', collapseSettleMs: 99999, bogus: 1, nested: { tickMs: 1 } });
+  assert.equal(out.tickMs, r.TILE_SETTINGS_LIMITS.tickMs[0], 'too-low heartbeat (as a string) clamps up');
+  assert.equal(out.collapseSettleMs, r.TILE_SETTINGS_LIMITS.collapseSettleMs[1], 'too-high shrink delay clamps down');
+  assert.ok(!('bogus' in out) && !('nested' in out), 'only the known keys come back');
+  const again = r.applyTileSettings({ tickMs: 'abc', collapseSettleMs: NaN });
+  assert.deepEqual(again, out, 'non-numbers leave the settings as they were');
+  assert.equal(r.applyTileSettings({ collapseSettleMs: 749.6 }).collapseSettleMs, 750, 'rounded to whole ms');
 });
 
 // ── reopen (`las widget`) forgets saved position, keeps color/prefs ────────
