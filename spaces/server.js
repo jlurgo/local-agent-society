@@ -22,6 +22,7 @@ const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const mac = require('./lib/mac');
 const { buildWorld } = require('./lib/world');
+const { readTerminals } = require('./lib/terminals');
 
 const PORT = Number(process.env.LAS_SPACES_PORT || process.argv[2] || 9002);
 const XR_DIR = path.join(__dirname, 'xr');
@@ -59,6 +60,33 @@ async function tickWorld() {
     warn('world', `build failed: ${err && err.message ? err.message : err}`);
   } finally {
     building = false;
+  }
+}
+
+// ── terminals as text: polled once a second while someone watches, pushed when changed ──
+const TEXT_TICK_MS = 1000;
+const termText = new Map();   // wid → { rows, cols, text, at }
+let textPolling = false;
+async function tickText() {
+  if (textPolling || !sockets.size) return;
+  textPolling = true;
+  try {
+    const terms = await readTerminals();
+    const byName = new Map(terms.map((t) => [t.name, t]));
+    for (const d of world.displays) for (const s of d.spaces) for (const w of s.windows) {
+      if (w.kind !== 'terminal') continue;
+      const t = byName.get(w.title);
+      if (!t) continue;
+      const prev = termText.get(w.wid);
+      if (prev && prev.text === t.text && prev.rows === t.rows && prev.cols === t.cols) continue;
+      const entry = { rows: t.rows, cols: t.cols, text: t.text, at: Date.now() };
+      termText.set(w.wid, entry);
+      broadcast({ type: 'text', wid: w.wid, ...entry });
+    }
+  } catch (err) {
+    warn('text', `read failed: ${err && err.message ? err.message : err}`);
+  } finally {
+    textPolling = false;
   }
 }
 
@@ -201,6 +229,10 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
   let m;
   if (req.method === 'GET' && p === '/world') return json(res, 200, world);
+  if (req.method === 'GET' && (m = /^\/text\/(\d+)$/.exec(p))) {
+    const t = termText.get(Number(m[1]));
+    return t ? json(res, 200, { wid: Number(m[1]), ...t }) : json(res, 404, { error: 'no text (not a Terminal.app window, or not read yet)' });
+  }
   if (req.method === 'GET' && (m = /^\/thumb\/(\d+)$/.exec(p))) {
     const w = Math.max(64, Math.min(1600, Number(url.searchParams.get('w')) || 480));
     const r = await thumb(Number(m[1]), w, url.searchParams.has('live'));
@@ -243,6 +275,8 @@ server.on('upgrade', (req, socket) => {
   sockets.add(socket);
   info('ws', `open from ${socket.remoteAddress} (${sockets.size} client${sockets.size === 1 ? '' : 's'})`);
   socket.write(frame(JSON.stringify({ type: 'world', world })));
+  for (const [wid, t] of termText) socket.write(frame(JSON.stringify({ type: 'text', wid, ...t })));
+  tickText();
   let buf = Buffer.alloc(0);
   socket.on('data', (chunk) => {
     buf = Buffer.concat([buf, chunk]);
@@ -271,4 +305,5 @@ server.listen(PORT, '127.0.0.1', () => {
   info('server', `las-spaces listening on http://127.0.0.1:${PORT} (xr dir ${XR_DIR})`);
   tickWorld();
   setInterval(tickWorld, WORLD_TICK_MS);
+  setInterval(tickText, TEXT_TICK_MS);
 });

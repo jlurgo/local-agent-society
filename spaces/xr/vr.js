@@ -58,6 +58,42 @@ function textTexture(text, { width = 512, height = 64, bg = 'rgba(0,0,0,0)', fg 
 }
 const ink = (hex) => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || ''); if (!m) return '#141414'; const [r, g, b] = [m[1], m[2], m[3]].map((h) => parseInt(h, 16) / 255); return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.45 ? '#f4f4f4' : '#141414'; };
 
+// ── terminal text → texture ────────────────────────────────────────────────
+// A terminal panel is its screen text (server /ws {type:'text'}), drawn in a
+// monospace font on a canvas sized to its rows×cols, so it is crisp on the
+// stage and cheap everywhere. One texture per window, shared by its panel
+// and the stage; redrawn only when the text changes.
+const termTex = new Map();   // wid → { tex, canvas, rows, cols, aspect }
+function drawTerminal(wid, { rows, cols, text }) {
+  rows = Math.max(1, rows || 24); cols = Math.max(1, cols || 80);
+  const charW = Math.min(9, Math.floor(2048 / cols)), fontPx = Math.round(charW / 0.6), lineH = Math.round(fontPx * 1.22);
+  const W = cols * charW, H = rows * lineH;
+  let t = termTex.get(wid);
+  if (!t || t.canvas.width !== W || t.canvas.height !== H) {
+    const canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H;
+    const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearMipmapLinearFilter; tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    if (t) t.tex.dispose();
+    t = { tex, canvas, rows, cols, aspect: W / H }; termTex.set(wid, t);
+    for (const b of boards) for (const p of b.panels) if (p.wid === wid) applyTexture(p.mesh, tex, t.aspect);
+    if (stage && stage.wid === wid) applyTexture(stage.mesh, tex, t.aspect, STAGE_WIDTH_M);
+  }
+  const g = t.canvas.getContext('2d');
+  g.fillStyle = '#0e0e12'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#dcdcdc'; g.font = `${fontPx}px Menlo, Monaco, "DejaVu Sans Mono", monospace`; g.textBaseline = 'top';
+  const lines = text.split('\n');
+  for (let i = 0; i < Math.min(rows, lines.length); i++) g.fillText(lines[i], 2, i * lineH + 2);
+  t.tex.needsUpdate = true;
+}
+function applyTexture(mesh, tex, aspect, width = null) {
+  mesh.material.map = tex; mesh.material.color.set(0xffffff); mesh.material.needsUpdate = true;
+  if (width) {   // the stage takes the texture's real aspect
+    const h = width / aspect;
+    mesh.geometry.dispose(); mesh.geometry = new THREE.PlaneGeometry(width, h);
+    if (mesh.children[0]) { mesh.children[0].geometry.dispose(); mesh.children[0].geometry = new THREE.PlaneGeometry(width + 0.04, h + 0.04); }
+    if (mesh.children[1]) mesh.children[1].position.y = h / 2 + 0.05;
+  }
+}
+
 // ── boards ─────────────────────────────────────────────────────────────────
 let world = null;
 let layout = localStorage.getItem('las-spaces-layout') || 'ring';
@@ -98,13 +134,15 @@ function makeBoard(space, agents) {
     const mat = new THREE.MeshBasicMaterial({ color: 0x000000 });
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, PANEL_H), mat);
     mesh.position.set(x, y, 0.004);
-    mesh.userData = { action: 'window', wid: win.wid, label: win.title || win.app };
+    mesh.userData = { action: 'window', wid: win.wid, label: win.title || win.app, kind: win.kind };
     group.add(mesh); hoverables.push(mesh);
+    const tt = win.kind === 'terminal' ? termTex.get(win.wid) : null;
+    if (tt) applyTexture(mesh, tt.tex, tt.aspect);
     const labelText = win.session ? `${win.session.agent} · ${win.session.runtime} — ${win.title}` : (win.title || win.app);
     const label = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, LABEL_H), new THREE.MeshBasicMaterial({ map: textTexture(labelText, { width: 1024, height: 92, fg: win.kind === 'terminal' ? '#cfe8ff' : '#e8e8e8', font: '30px -apple-system, system-ui, sans-serif' }), transparent: true }));
     label.position.set(x, y - PANEL_H / 2 - LABEL_H / 2 - 0.005, 0.004);
     group.add(label);
-    panels.push({ mesh, wid: win.wid, loading: false, at: 0 });
+    panels.push({ mesh, wid: win.wid, kind: win.kind, loading: false, at: 0 });
   });
   const b = { group, space, w, h, panels };
   boards.push(b);
@@ -178,7 +216,9 @@ function openStage(panel, label) {
   title.position.y = STAGE_WIDTH_M * 9 / 32 + 0.05;
   mesh.add(title);
   scene.add(mesh); hoverables.push(mesh);
-  stage = { wid: panel.wid, mesh, loading: false, at: 0, aspectSet: false };
+  stage = { wid: panel.wid, mesh, kind: panel.kind, loading: false, at: 0, aspectSet: false };
+  const tt = panel.kind === 'terminal' ? termTex.get(panel.wid) : null;
+  if (tt) { applyTexture(mesh, tt.tex, tt.aspect, STAGE_WIDTH_M); stage.aspectSet = true; }
 }
 function closeStage() {
   if (!stage) return;
@@ -190,6 +230,7 @@ function closeStage() {
 }
 function refreshStage() {
   if (!stage || stage.loading || performance.now() - stage.at < 200) return;
+  if (stage.kind === 'terminal' && termTex.has(stage.wid)) return;   // text: already live
   const st = stage; st.loading = true;
   loader.load(`/thumb/${st.wid}?w=${STAGE_W}&live=1&t=${Date.now()}`, (tex) => {
     if (stage !== st) { tex.dispose(); return; }
@@ -230,6 +271,7 @@ setInterval(() => {
   for (const b of boards) {
     const focused = b.space.id === focusedSpace;
     for (const p of b.panels) {
+      if (p.kind === 'terminal' && termTex.has(p.wid)) continue;   // text, pushed by the server — never captured
       const live = hovered && hovered.userData.wid === p.wid;
       const every = live ? 350 : focused ? 3000 : 12000;
       if (now - p.at > every) refresh(p, live);
@@ -331,7 +373,7 @@ renderer.xr.addEventListener('sessionend', () => { report({ sessionEnded: true }
 fetch('/world').then((r) => r.json()).then((w) => { world = w; buildWorld(); }).catch(() => {});
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.type === 'world') { world = d.world; buildWorld(); } };
+  ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.type === 'world') { world = d.world; buildWorld(); } else if (d.type === 'text') drawTerminal(d.wid, d); };
   ws.onclose = () => setTimeout(connect, 2000);
 }
 connect();

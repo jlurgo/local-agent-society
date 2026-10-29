@@ -27,6 +27,8 @@
     .win .t { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.85; }
     .win .s { font-size: 11px; opacity: 0.6; }
     .win .s b { color: #fff; }
+    .win pre { margin: 0; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 8px; background: #0e0e12; color: #dcdcdc; font: 5.2px/1.25 Menlo, Monaco, monospace; padding: 4px; box-sizing: border-box; white-space: pre; }
+    .win:hover pre { outline: 2px solid #4f8cff; }
     .others { font-size: 12px; opacity: 0.6; padding: 0 12px 10px; }
   </style>
 </head>
@@ -42,6 +44,7 @@
     const spacesEl = document.getElementById('spaces');
     const conn = document.getElementById('conn'), dot = document.getElementById('dot'), summary = document.getElementById('summary');
     let world = null;
+    const texts = {};   // wid → { rows, cols, text } for Terminal.app windows, pushed by the server
     const post = (p) => fetch(p, { method: 'POST' }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));
 
     function render() {
@@ -64,7 +67,7 @@
         card.dataset.key = key;
         const terms = s.windows.filter((w) => w.kind === 'terminal'), browsers = s.windows.filter((w) => w.kind === 'browser'), others = s.windows.filter((w) => w.kind === 'other');
         const badge = (name) => { const a = agents[name] || {}; return `<span class="agent" style="background:${a.color || '#90c060'}"><span class="st"></span>${name}</span>`; };
-        const win = (w) => `<div class="win" data-wid="${w.wid}" title="${esc(w.title)}"><img data-wid="${w.wid}" alt="" /><div class="t">${esc(w.title || w.app)}</div>${w.session ? `<div class="s"><b>${esc(w.session.agent)}</b> · ${esc(w.session.runtime)}</div>` : `<div class="s">${esc(w.app)}</div>`}</div>`;
+        const win = (w) => `<div class="win" data-wid="${w.wid}" title="${esc(w.title)}">${w.kind === 'terminal' ? `<pre data-text="${w.wid}">${esc(texts[w.wid] ? texts[w.wid].text : '')}</pre>` : `<img data-wid="${w.wid}" alt="" />`}<div class="t">${esc(w.title || w.app)}</div>${w.session ? `<div class="s"><b>${esc(w.session.agent)}</b> · ${esc(w.session.runtime)}</div>` : `<div class="s">${esc(w.app)}</div>`}</div>`;
         card.innerHTML = `
           <div class="head" data-space="${s.id}"><span class="idx">#${s.index + 1}</span>${s.agents.length ? s.agents.map(badge).join(' ') : '<span class="empty">no agent</span>'}${s.current ? '<span style="margin-left:auto;color:#4f8cff">● here</span>' : ''}</div>
           ${terms.length ? `<div class="group"><h4>Terminals</h4>${terms.map(win).join('')}</div>` : ''}
@@ -105,7 +108,7 @@
     function connect() {
       const ws = new WebSocket(`ws://${location.host}/ws`);
       ws.onopen = () => { conn.textContent = 'live'; dot.classList.add('on'); };
-      ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.type === 'world') { world = d.world; render(); } };
+      ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.type === 'world') { world = d.world; render(); } else if (d.type === 'text') { texts[d.wid] = d; const pre = document.querySelector(`pre[data-text="${d.wid}"]`); if (pre) pre.textContent = d.text; } };
       ws.onclose = () => { conn.textContent = 'reconnecting…'; dot.classList.remove('on'); setTimeout(connect, 2000); };
     }
     // First paint from plain HTTP, then live over the socket.
