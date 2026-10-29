@@ -9,8 +9,10 @@
 // other terminals and the browser windows on its Space — form a MOSAIC of
 // panels around it (terminals are live text, browsers live pixels).
 // Trigger on a panel puts it on the STAGE, big, and focuses that window on
-// the Mac so you can type into it (physical keyboard now; pointer and a
-// virtual keyboard next). When an agent speaks, a SPEECH BUBBLE with its
+// the Mac. On the stage the controller IS a pointer: moving it moves the
+// Mac's pointer in that window, the trigger clicks, the thumbstick scrolls;
+// a VIRTUAL KEYBOARD under the stage types into it (server /input → real
+// CGEvents), and the physical keyboard works as ever. A/X or B/Y closes. When an agent speaks, a SPEECH BUBBLE with its
 // words rises from its sphere while the voice plays (fed by the widget
 // app through the server's /speech). Outside VR the same scene renders
 // flat with a mouse, which is how it is checked from the Mac.
@@ -199,7 +201,7 @@ function buildWorld() {
   layoutFlower();
   buildMosaic();
   if (stage && !panels.some((p) => p.wid === stage.wid)) closeStage();
-  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · bubble: select · panel: open big + type into it · A/B: close`;
+  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · bubble: select · panel: open big · on the stage: point = pointer, trigger = click, stick = scroll, keys below · A/B: close`;
 }
 
 function select(name) {
@@ -235,6 +237,7 @@ function openStage(panel, label) {
   title.position.y = STAGE_WIDTH_M * 9 / 32 + 0.05; mesh.add(title);
   scene.add(mesh); hoverables.push(mesh);
   stage = { wid: panel.wid, mesh, kind: panel.kind, loading: false, at: 0, aspectSet: false };
+  buildKeyboard();
   const tt = panel.kind === 'terminal' ? termTex.get(panel.wid) : null;
   if (tt) { applyTexture(mesh, tt.tex, tt.aspect, STAGE_WIDTH_M); stage.aspectSet = true; }
 }
@@ -245,6 +248,7 @@ function closeStage() {
   disposeObject(stage.mesh);
   if (hovered === stage.mesh) setHovered(null);
   stage = null;
+  destroyKeyboard();
 }
 const loader = new THREE.TextureLoader();
 function refreshStage() {
@@ -288,30 +292,33 @@ const controllers = [0, 1].map((i) => {
   const c = renderer.xr.getController(i);
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0x8ab4ff }));
   line.scale.z = 4; c.add(line);
-  c.addEventListener('selectstart', () => act(pick(c)));
+  c.addEventListener('selectstart', () => { const hit = pickHit(c); act(hit ? hit.object : null, uvOf(hit)); });
   scene.add(c);
   return c;
 });
 const highlight = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0x8ab4ff, transparent: true, opacity: 0.35, side: THREE.DoubleSide }));
 highlight.visible = false; scene.add(highlight);
 const tmpM = new THREE.Matrix4();
-function pick(controller) {
+function pickHit(controller) {
   tmpM.identity().extractRotation(controller.matrixWorld);
   raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
-  const hit = raycaster.intersectObjects(hoverables, false)[0];
-  return hit ? hit.object : null;
+  return raycaster.intersectObjects(hoverables, false)[0] || null;
 }
+function pick(controller) { const h = pickHit(controller); return h ? h.object : null; }
+const uvOf = (hit) => (hit && hit.uv ? { u: hit.uv.x, v: 1 - hit.uv.y } : null);   // v from the top, like the Mac
 const mouse = new THREE.Vector2(-2, -2);
 window.addEventListener('pointermove', (e) => { mouse.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1); });
-window.addEventListener('click', () => { if (renderer.xr.isPresenting) return; raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; act(hit ? hit.object : null); });
+window.addEventListener('click', () => { if (renderer.xr.isPresenting) return; raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; act(hit ? hit.object : null, uvOf(hit)); });
+window.addEventListener('wheel', (e) => { if (renderer.xr.isPresenting || !stage || hovered !== stage.mesh) return; raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObject(stage.mesh, false)[0]; const uv = uvOf(hit); if (uv) post('/input', { wid: stage.wid, type: 'scroll', ...uv, dx: e.deltaX, dy: e.deltaY }); });
 window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeStage(); });
 
 let busy = false;
-async function act(obj) {
+async function act(obj, uv = null) {
   if (!obj || busy) return;
   const u = obj.userData;
-  if (u.action === 'stage') { closeStage(); return; }
+  if (u.action === 'stage') { if (uv) post('/input', { wid: u.wid, type: 'click', ...uv }); return; }
+  if (u.action === 'key') { pressKey(u); return; }
   if (u.action === 'agent') { select(u.name); report({ act: 'select', label: u.name }); return; }
   busy = true;
   const panel = panels.find((p) => p.wid === u.wid);
@@ -321,16 +328,98 @@ async function act(obj) {
   busy = false;
 }
 const padState = new Map();
+let lastMoveAt = 0, lastScrollAt = 0;
 function pollGamepads() {
   const session = renderer.xr.getSession();
   if (!session) return;
+  const now = performance.now();
   for (const src of session.inputSources) {
     const gp = src.gamepad; if (!gp) continue;
     const prev = padState.get(src) || {};
     const b4 = gp.buttons[4] && gp.buttons[4].pressed, b5 = gp.buttons[5] && gp.buttons[5].pressed;
     if ((b4 && !prev.b4) || (b5 && !prev.b5)) closeStage();
     padState.set(src, { b4, b5 });
+    // pointing at the stage: the Mac's pointer follows; the thumbstick scrolls
+    if (stage && now - lastScrollAt > 90) {
+      const y = gp.axes[3] || 0;
+      if (Math.abs(y) > 0.3) { const c = controllers[src.handedness === 'left' ? 0 : 1]; const uv = uvOf(c && pickHit(c)); if (uv) { lastScrollAt = now; post('/input', { wid: stage.wid, type: 'scroll', ...uv, dx: 0, dy: y * 60 }); } }
+    }
   }
+  if (stage && hovered === stage.mesh && now - lastMoveAt > 80) {
+    for (const c of controllers) { const hit = pickHit(c); if (hit && hit.object === stage.mesh) { lastMoveAt = now; post('/input', { wid: stage.wid, type: 'move', ...uvOf(hit) }); break; } }
+  }
+}
+
+// ── the virtual keyboard under the stage ───────────────────────────────────
+// Rows of key meshes; trigger on one types it (server /input: Unicode text
+// for characters, key codes for the specials). Shift/Ctrl/Cmd are sticky
+// for one key. Shown only while a window is on the stage.
+const KEY_ROWS = [
+  [['`', '~'], ['1', '!'], ['2', '@'], ['3', '#'], ['4', '$'], ['5', '%'], ['6', '^'], ['7', '&'], ['8', '*'], ['9', '('], ['0', ')'], ['-', '_'], ['=', '+'], { key: 'backspace', label: '⌫', w: 1.6 }],
+  [{ key: 'tab', label: 'Tab', w: 1.4 }, 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', ['[', '{'], [']', '}'], ['\\', '|']],
+  [{ mod: 'ctrl', label: 'Ctrl', w: 1.6 }, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', [';', ':'], ["'", '"'], { key: 'enter', label: '⏎', w: 1.8 }],
+  [{ mod: 'shift', label: '⇧', w: 2.0 }, 'z', 'x', 'c', 'v', 'b', 'n', 'm', [',', '<'], ['.', '>'], ['/', '?'], { key: 'up', label: '↑' }, { key: 'escape', label: 'Esc', w: 1.2 }],
+  [{ mod: 'command', label: '⌘', w: 1.6 }, { text: ' ', label: 'space', w: 7 }, { key: 'left', label: '←' }, { key: 'down', label: '↓' }, { key: 'right', label: '→' }, { text: '/', label: '/' }],
+];
+const KEY_W = 0.075, KEY_H = 0.07, KEY_GAP = 0.008;
+let keyboard = null;   // { group, keys: [{ mesh, def }] }
+const mods = { shift: false, ctrl: false, command: false };
+function keyLabel(def) {
+  if (typeof def === 'string') return mods.shift ? def.toUpperCase() : def;
+  if (Array.isArray(def)) return mods.shift ? def[1] : def[0];
+  return def.label;
+}
+function buildKeyboard() {
+  destroyKeyboard();
+  const group = new THREE.Group();
+  const keys = [];
+  const totalW = Math.max(...KEY_ROWS.map((r) => r.reduce((w, d) => w + ((d && d.w) || 1) * KEY_W + KEY_GAP, 0)));
+  KEY_ROWS.forEach((row, r) => {
+    let x = -totalW / 2;
+    for (const def of row) {
+      const w = ((def && def.w) || 1) * KEY_W;
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w - KEY_GAP, KEY_H - KEY_GAP), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+      mesh.position.set(x + w / 2, -r * KEY_H, 0);
+      mesh.userData = { action: 'key', def, label: keyLabel(def) };
+      group.add(mesh); hoverables.push(mesh); keys.push({ mesh, def });
+      x += w + KEY_GAP;
+    }
+  });
+  keyboard = { group, keys };
+  paintKeys();
+  group.position.set(0, EYE_Y - 0.62, -STAGE_DIST + 0.15);
+  group.rotation.x = -0.55;
+  scene.add(group);
+}
+function paintKeys() {
+  if (!keyboard) return;
+  for (const { mesh, def } of keyboard.keys) {
+    const isMod = def && def.mod, on = isMod && mods[def.mod];
+    const label = keyLabel(def);
+    mesh.userData.label = label;
+    const old = mesh.material.map;
+    mesh.material.map = textTexture(label, { width: 192, height: 128, bg: on ? '#8ab4ff' : isMod ? '#3a3a48' : '#2a2a34', fg: on ? '#141414' : '#f0f0f0', font: `${label.length > 2 ? 40 : 56}px -apple-system, system-ui, sans-serif`, align: 'center', pad: 8 });
+    mesh.material.needsUpdate = true;
+    if (old) old.dispose();
+  }
+}
+function destroyKeyboard() {
+  if (!keyboard) return;
+  scene.remove(keyboard.group);
+  for (const { mesh } of keyboard.keys) { const i = hoverables.indexOf(mesh); if (i !== -1) hoverables.splice(i, 1); }
+  disposeObject(keyboard.group);
+  keyboard = null;
+}
+function pressKey(u) {
+  if (!stage) return;
+  const def = u.def;
+  if (def && def.mod) { mods[def.mod] = !mods[def.mod]; paintKeys(); return; }
+  const active = ['shift', 'ctrl', 'command'].filter((m) => mods[m]);
+  const text = typeof def === 'string' ? (mods.shift ? def.toUpperCase() : def) : Array.isArray(def) ? (mods.shift ? def[1] : def[0]) : def.text;
+  if (def && def.key) post('/input', { wid: stage.wid, type: 'key', key: def.key, mods: active.map((m) => (m === 'ctrl' ? 'control' : m)) });
+  else if (mods.ctrl || mods.command) post('/input', { wid: stage.wid, type: 'key', key: String(text).toLowerCase(), mods: active.map((m) => (m === 'ctrl' ? 'control' : m)) });
+  else post('/input', { wid: stage.wid, type: 'type', text });
+  if (active.length) { mods.shift = mods.ctrl = mods.command = false; paintKeys(); }
 }
 
 function setHovered(obj) {

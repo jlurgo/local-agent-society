@@ -23,6 +23,7 @@ const { execFile } = require('node:child_process');
 const mac = require('./lib/mac');
 const { buildWorld } = require('./lib/world');
 const { readTerminals } = require('./lib/terminals');
+const input = require('./lib/input');
 
 const PORT = Number(process.env.LAS_SPACES_PORT || process.argv[2] || 9002);
 const XR_DIR = path.join(__dirname, 'xr');
@@ -211,6 +212,33 @@ async function raiseWindow(win, space) {
   return { ok: false, error: last && last.stderr ? last.stderr : 'the Space did not switch' };
 }
 
+/**
+ * POST /input — pointer / scroll / keyboard into a window, by normalized
+ * coordinates (u, v in 0..1 over the window's bounds, v from the top):
+ *   { wid, type: 'move'|'click'|'scroll'|'type'|'key', u, v, button, count, dx, dy, text, key, mods }
+ * The window must be the one in front (openStage focuses it); for a
+ * window on another Space the pointer lands wherever the Mac is, so it is
+ * refused unless the window's Space is the current one.
+ */
+async function handleInput(body) {
+  let win = null, space = null;
+  for (const d of world.displays) for (const s of d.spaces) for (const w of s.windows) if (w.wid === Number(body.wid)) { win = w; space = s.id; }
+  if (!win) return { ok: false, error: 'unknown window' };
+  const t = body.type;
+  if (t === 'type' || t === 'key') {
+    if (t === 'type') await input.type(String(body.text || '')); else input.key(body.key, Array.isArray(body.mods) ? body.mods : []);
+    return { ok: true };
+  }
+  if (space !== currentSpaceNow()) return { ok: false, error: 'window is not on the current Space' };
+  const u = Math.min(1, Math.max(0, Number(body.u) || 0)), v = Math.min(1, Math.max(0, Number(body.v) || 0));
+  const x = win.bounds.x + u * win.bounds.width, y = win.bounds.y + v * win.bounds.height;
+  if (t === 'move') input.mouseMove(x, y);
+  else if (t === 'click') await input.click(x, y, { button: body.button || 'left', count: Math.min(3, Math.max(1, Number(body.count) || 1)) });
+  else if (t === 'scroll') input.scroll(x, y, Number(body.dx) || 0, Number(body.dy) || 0);
+  else return { ok: false, error: `unknown input type ${t}` };
+  return { ok: true };
+}
+
 // ── http ───────────────────────────────────────────────────────────────────
 function json(res, code, body) {
   res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -241,6 +269,11 @@ const server = http.createServer(async (req, res) => {
     return res.end(r.jpeg);
   }
   if (req.method === 'POST' && (m = /^\/space\/(\d+)\/activate$/.exec(p))) return json(res, 200, await activateSpace(m[1]));
+  if (req.method === 'POST' && p === '/input') {
+    let body = {};
+    try { body = JSON.parse(await readBody(req) || '{}'); } catch { return json(res, 400, { ok: false, error: 'bad json' }); }
+    try { return json(res, 200, await handleInput(body)); } catch (err) { warn('input', `${err && err.message ? err.message : err}`); return json(res, 500, { ok: false, error: String(err && err.message || err) }); }
+  }
   if (req.method === 'POST' && (m = /^\/window\/(\d+)\/focus$/.exec(p))) return json(res, 200, await focusWindow(Number(m[1])));
   // The widget app tells us when an agent starts/stops talking (main.js
   // notifySpaces): the immersive view raises a speech bubble from that agent.
