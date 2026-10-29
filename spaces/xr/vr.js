@@ -155,7 +155,7 @@ function drawTerminal(wid, { rows, cols, text }) {
     if (t) t.tex.dispose();
     t = { tex, canvas, aspect: W / H }; termTex.set(wid, t);
     let relayout = false;
-    for (const p of panels) if (p.wid === wid) { p.h = p.w / t.aspect; p.aspectSet = true; applyTexture(p.mesh, tex, t.aspect, p.w); relayout = true; }
+    for (const p of panels) if (p.wid === wid) { if (t.aspect > 2.2 && p.w < MOSAIC.colW * 1.5) p.w = MOSAIC.colW * 2 + MOSAIC.gap; p.h = p.w / t.aspect; p.aspectSet = true; applyTexture(p.mesh, tex, t.aspect, p.w); p.label.geometry.dispose(); p.label.geometry = new THREE.PlaneGeometry(p.w, LABEL_H); relayout = true; }
     if (relayout) { layoutMosaic(); placeMosaic(); }
   }
   const g = t.canvas.getContext('2d');
@@ -255,7 +255,7 @@ function setSelected(name) {
     if (isSel) {
       const title = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.13), new THREE.MeshBasicMaterial({ map: textTexture(n, { width: 1024, height: 134, bg: f.color, fg: ink(f.color), font: 'bold 72px -apple-system, system-ui, sans-serif', align: 'center' }) }));
       title.position.set(0, mosaicExtent.top + 0.1, 0);
-      title.userData = { action: 'agent', name: n, label: n };
+      title.userData = { action: 'title', name: n, label: n };
       f.group.add(title); hoverables.push(title); f.title = title;
     }
   }
@@ -311,8 +311,9 @@ function buildMosaic() {
   const mem = mosaicMemory.get(selected) || { order: [], scales: {} };
   const wins = agentWindows(f.agent).sort((a, b) => { const ia = mem.order.indexOf(a.wid), ib = mem.order.indexOf(b.wid); return (ia === -1 ? 1e9 : ia) - (ib === -1 ? 1e9 : ib); });
   wins.forEach((win) => {
-    const w = MOSAIC.colW;
     const tt = win.kind === 'terminal' ? termTex.get(win.wid) : null;
+    const wide = win.kind === 'terminal' && (!tt || tt.aspect > 2.2);   // a wide terminal (most are) takes two columns, or it is a sliver
+    const w = wide ? MOSAIC.colW * 2 + MOSAIC.gap : MOSAIC.colW;
     const h = tt ? w / tt.aspect : win.kind === 'browser' ? w * 9 / 16 * MOSAIC.browserScale : w * 9 / 16;
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: 0x000000 }));
     mesh.userData = { action: 'window', wid: win.wid, label: win.title || win.app, kind: win.kind };
@@ -375,8 +376,9 @@ function buildWorld() {
   hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · bubble: select · tile: trigger clicks (and focuses it on the Mac), stick scrolls, grip drags it into another slot, both grips resize it · grip on nothing moves everything · nothing: collapse`;
 }
 function select(name) {
+  if (name === selected) return;   // already open; collapse is a trigger on nothing (or Esc)
   mosaicAz = headYaw; mosaicEl = THREE.MathUtils.clamp(headPitch, -0.4, 0.4);
-  setSelected(selected === name ? null : name);
+  setSelected(name);
   buildMosaic();
 }
 function collapse() { setSelected(null); buildMosaic(); }
@@ -522,9 +524,18 @@ window.addEventListener('click', () => { if (renderer.xr.isPresenting) return; r
 window.addEventListener('wheel', (e) => { if (renderer.xr.isPresenting) return; const p = hovered && tileOf(hovered); if (!p || !p.focused) return; raycaster.setFromCamera(mouse, camera); const uv = uvOf(raycaster.intersectObject(p.mesh, false)[0]); if (uv) post('/input', { wid: p.wid, type: 'scroll', ...uv, dx: e.deltaX, dy: e.deltaY }); });
 window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (activeTile) setActiveTile(null); else collapse(); } });
 
+function rayNearMosaic(controller) {
+  if (!panels.length) return false;
+  let az, el;
+  if (controller) { tmpM.identity().extractRotation(controller.matrixWorld); const d = new THREE.Vector3(0, 0, -1).applyMatrix4(tmpM); az = Math.atan2(d.x, -d.z) - new THREE.Euler().setFromQuaternion(root.quaternion, 'YXZ').y; el = Math.asin(THREE.MathUtils.clamp(d.y, -1, 1)); }
+  else { az = headYaw; el = headPitch; }
+  const c = mosaicCenter(); let dAz = az - c.az; dAz = Math.atan2(Math.sin(dAz), Math.cos(dAz));
+  return Math.abs(dAz) < mosaicExtent.hAz + 0.2 && Math.abs(el - c.el) < mosaicExtent.hEl + 0.3;
+}
 async function act(obj, uv, controller) {
-  if (!obj) { collapse(); report({ act: 'collapse' }); return; }
+  if (!obj) { if (rayNearMosaic(controller)) return; collapse(); report({ act: 'collapse' }); return; }   // a near miss around the tiles is not a collapse
   const u = obj.userData;
+  if (u.action === 'title') return;
   if (u.action === 'key') { pressKey(u); return; }
   if (u.action === 'agent') { select(u.name); report({ act: 'select', label: u.name }); return; }
   if (u.action === 'window') {
