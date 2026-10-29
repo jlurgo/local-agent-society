@@ -1,21 +1,21 @@
 // LAS Spaces — the immersive view (WebXR + three.js). See
 // docs/plans/2026-10-29-quest-spaces.md.
 //
-// A view of the LAS AGENTS: each agent is a BUBBLE (a sphere in its color
-// with its name) and the bubbles float in front of you like a flower —
-// the SELECTED agent at the center, the others as petals around it.
-// Selecting an agent (trigger on its bubble) moves it to the center and
-// EXPANDS it: its windows — the terminals of its sessions first, then the
-// other terminals and the browser windows on its Space — form a MOSAIC of
-// panels around it (terminals are live text, browsers live pixels).
-// Trigger on a panel puts it on the STAGE, big, and focuses that window on
-// the Mac. On the stage the controller IS a pointer: moving it moves the
-// Mac's pointer in that window, the trigger clicks, the thumbstick scrolls;
-// a VIRTUAL KEYBOARD under the stage types into it (server /input → real
-// CGEvents), and the physical keyboard works as ever. A/X or B/Y closes. When an agent speaks, a SPEECH BUBBLE with its
-// words rises from its sphere while the voice plays (fed by the widget
-// app through the server's /speech). Outside VR the same scene renders
-// flat with a mouse, which is how it is checked from the Mac.
+// A view of the LAS AGENTS over your room (passthrough). Each agent is a
+// BUBBLE — a flat circle in its widget color with its name — and the
+// bubbles float in front of you in a SUNFLOWER (Vogel's spiral), drifting
+// with your gaze like a swarm. Trigger on one selects it: it takes the
+// center and its windows — the terminals of its sessions first, then the
+// other terminals and the browser windows on its Space — form a MOSAIC
+// ring (terminals live text, browsers live pixels). Trigger on a panel
+// opens a SCREEN: big, movable (grip) and resizable (grip a corner, or
+// both grips); several can be open; the bubbles move aside of open
+// screens. On a screen the trigger clicks, the thumbstick scrolls and a
+// keyboard types — the Mac is focused on that window at the first
+// interaction, never before. Trigger on nothing collapses everything back
+// to the bubbles. A talking agent comes closer, inflates and pulses with
+// its words in a speech bubble while its voice plays.
+// Outside VR the same scene renders flat with a mouse, for checks from the Mac.
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { ARButton } from 'three/addons/webxr/ARButton.js';
@@ -26,18 +26,15 @@ window.addEventListener('error', (e) => report({ error: String(e.message), at: `
 window.addEventListener('unhandledrejection', (e) => report({ error: 'unhandled: ' + String(e.reason && e.reason.message || e.reason) }));
 const post = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));
 
-// ── layout (meters) ────────────────────────────────────────────────────────
-const EYE_Y = 1.25;   // the display's default height; grab it (grip) to put it where you like
-// Everything sits on spheres centered on your head (so "facing you" is the
-// natural orientation): angles are azimuth (+ right) and elevation (+ up).
-const FLOWER = { r: 1.9, spreadAz: 0.42, spreadEl: 0.32, spreadAzOpen: 0.58, spreadElOpen: 0.44, bubbleR: 0.12 };
-const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045, MOSAIC = { r: 1.85, az: 0.36, el: 0.27 };
-const THUMB_W = 400, LIVE_W = 1100, STAGE_W = 1500, STAGE_W_HI = 2400, STAGE_WIDTH_M = 2.0, STAGE_DIST = 1.4;
+// ── layout (meters / radians) — everything on spheres around your head ─────
+const EYE_Y = 1.25;
+const CLOUD = { r: 1.9, step: 0.11, aside: 0.72, follow: 0.035, bubbleR: 0.12 };   // sunflower of bubbles
+const MOSAIC = { r: 1.85, az: 0.36, el: 0.27, aside: 0.62 };
+const PANEL_W = 0.5, PANEL_H = PANEL_W * 9 / 16, LABEL_H = 0.045;
+const THUMB_W = 400, LIVE_W = 1100, SCREEN_W = 1500, SCREEN_W_HI = 2400, SCREEN_WIDTH_M = 1.7, SCREEN_DIST = 1.4, MAX_SCREENS = 3;
+const GOLDEN = Math.PI * (3 - Math.sqrt(5));
 
 // ── renderer / scene ───────────────────────────────────────────────────────
-// Your room as the background: an immersive-AR session shows the headset's
-// cameras (passthrough) behind the scene — transparent background, no
-// floor. Falls back to plain VR where AR is not offered.
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -45,6 +42,15 @@ renderer.setClearColor(0x000000, 0);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = null;
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 60);
+camera.position.set(0, EYE_Y, 0);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x303040, 1.1));
+const floor = new THREE.Mesh(new THREE.CircleGeometry(6, 48), new THREE.MeshBasicMaterial({ color: 0x14141a }));
+floor.rotation.x = -Math.PI / 2; floor.visible = false; scene.add(floor);
+const grid = new THREE.GridHelper(12, 24, 0x262630, 0x1c1c24); grid.position.y = 0.001; grid.visible = false; scene.add(grid);
+window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
 let passthrough = false;
 (async () => {
   const ar = navigator.xr && await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
@@ -53,22 +59,12 @@ let passthrough = false;
   report({ passthrough });
   if (!passthrough) { scene.background = new THREE.Color(0x0f0f14); floor.visible = grid.visible = true; }
 })();
-const scene = new THREE.Scene();
-scene.background = null;
-const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 60);
-camera.position.set(0, EYE_Y, 0);
-// Everything you see (agents, mosaic, big view, keyboard, speech bubbles)
-// hangs from ROOT, so a grip on empty space moves it all and two grips
-// scale it; where you leave it is remembered.
+
+// ROOT holds the display; a grip on nothing moves it, two grips scale it.
+// Placement is relative to the HEAD (an AR session may not grant a floor).
 const root = new THREE.Group();
 scene.add(root);
-// The display is placed relative to YOUR HEAD, not to a floor: in an AR
-// session the browser may not grant a floor-based reference space, and then
-// the origin is at eye level — content put at "1.25 m" hung 1.25 m above
-// the head. On session start the head height is read and the display is
-// based on it (EYE_Y is then "where the eyes are"); the saved placement is
-// stored relative to the head too.
-let headY = null, rebase = false;
+let headY = null, rebase = false, rebaseFrames = 0;
 let saved = null;
 try { saved = JSON.parse(localStorage.getItem('las-spaces-root') || 'null'); } catch { saved = null; }
 if (saved && saved.s) root.scale.setScalar(saved.s);
@@ -79,16 +75,14 @@ function rebaseToHead() {
   if (!cam || !Number.isFinite(cam.position.y) || cam.position.y === 0) return false;
   headY = cam.position.y;
   root.position.y = (headY - EYE_Y) + ((saved && saved.dy) || 0);
-  flowersLaidOut = false;
-  report({ rebase: true, headY: Number(headY.toFixed(2)), rootY: Number(root.position.y.toFixed(2)) });
+  report({ rebase: true, headY: Number(headY.toFixed(2)) });
   return true;
 }
-scene.add(new THREE.HemisphereLight(0xffffff, 0x303040, 1.1));
-const sun = new THREE.DirectionalLight(0xffffff, 0.8); sun.position.set(1, 3, 2); scene.add(sun);
-const floor = new THREE.Mesh(new THREE.CircleGeometry(6, 48), new THREE.MeshBasicMaterial({ color: 0x14141a }));
-floor.rotation.x = -Math.PI / 2; floor.visible = false; scene.add(floor);
-const grid = new THREE.GridHelper(12, 24, 0x262630, 0x1c1c24); grid.position.y = 0.001; grid.visible = false; scene.add(grid);
-window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+const viewer = new THREE.Vector3(), viewerWorld = new THREE.Vector3();   // the eyes, in root space / world
+let headYaw = 0, gazeAz = 0;   // where you look (yaw, in root space), and the smoothed azimuth the bubbles follow
+const dirFrom = (az, el) => new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
+const onSphere = (az, el, r) => viewer.clone().addScaledVector(dirFrom(az, el), r / root.scale.x);
+function place(obj, az, el, r) { obj.position.copy(onSphere(az, el, r)); obj.lookAt(viewerWorld); }
 
 // ── text as textures ───────────────────────────────────────────────────────
 function textTexture(text, { width = 512, height = 64, bg = 'rgba(0,0,0,0)', fg = '#eee', font = '28px -apple-system, system-ui, sans-serif', align = 'left', pad = 14 } = {}) {
@@ -102,7 +96,6 @@ function textTexture(text, { width = 512, height = 64, bg = 'rgba(0,0,0,0)', fg 
   const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter;
   return tex;
 }
-/** A speech bubble: wrapped text in the agent's color with a tail at the bottom. Returns { tex, aspect }. */
 function bubbleTexture(text, color) {
   const W = 768, pad = 28, font = 30, lineH = 38, maxLines = 7;
   const c = document.createElement('canvas'); const g = c.getContext('2d');
@@ -122,9 +115,11 @@ function bubbleTexture(text, color) {
 }
 function roundRect(g, x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
 const ink = (hex) => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || ''); if (!m) return '#141414'; const [r, g, b] = [m[1], m[2], m[3]].map((h) => parseInt(h, 16) / 255); return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.45 ? '#f4f4f4' : '#141414'; };
+function disposeObject(o) { o.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } if (c.geometry) c.geometry.dispose(); }); }
+function unhover(o) { const i = hoverables.indexOf(o); if (i !== -1) hoverables.splice(i, 1); }
 
 // ── terminal text → texture ────────────────────────────────────────────────
-const termTex = new Map();   // wid → { tex, canvas, aspect }
+const termTex = new Map();
 function drawTerminal(wid, { rows, cols, text }) {
   rows = Math.max(1, rows || 24); cols = Math.max(1, cols || 80);
   const charW = Math.min(9, Math.floor(2048 / cols)), fontPx = Math.round(charW / 0.6), lineH = Math.round(fontPx * 1.22);
@@ -136,7 +131,7 @@ function drawTerminal(wid, { rows, cols, text }) {
     if (t) t.tex.dispose();
     t = { tex, canvas, aspect: W / H }; termTex.set(wid, t);
     for (const p of panels) if (p.wid === wid) applyTexture(p.mesh, tex, t.aspect);
-    if (stage && stage.wid === wid) applyTexture(stage.mesh, tex, t.aspect, STAGE_WIDTH_M);
+    for (const sc of screens) if (sc.wid === wid) applyTexture(sc.mesh, tex, t.aspect, SCREEN_WIDTH_M);
   }
   const g = t.canvas.getContext('2d');
   g.fillStyle = '#0e0e12'; g.fillRect(0, 0, W, H);
@@ -152,25 +147,18 @@ function applyTexture(mesh, tex, aspect, width = null) {
     mesh.geometry.dispose(); mesh.geometry = new THREE.PlaneGeometry(width, h);
     if (mesh.children[0]) { mesh.children[0].geometry.dispose(); mesh.children[0].geometry = new THREE.PlaneGeometry(width + 0.04, h + 0.04); }
     if (mesh.children[1]) mesh.children[1].position.y = h / 2 + 0.05;
-    if (stage && mesh === stage.mesh) placeHandles();
+    const sc = screens.find((s) => s.mesh === mesh); if (sc) placeHandles(sc);
   }
 }
-function disposeObject(o) { o.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } if (c.geometry) c.geometry.dispose(); }); }
 
-// ── the flower: agent bubbles ──────────────────────────────────────────────
+// ── the bubbles (a sunflower) ──────────────────────────────────────────────
 let world = null;
-let selected = null;        // agent name at the center, expanded
-const viewerWorld = new THREE.Vector3();
-const dirFrom = (az, el) => new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
-/** Put obj (in root space) on the sphere of radius r around the viewer, at (az, el), facing the viewer. */
-function place(obj, az, el, r) {
-  obj.position.copy(viewer).addScaledVector(dirFrom(az, el), r / root.scale.x);
-  obj.lookAt(viewerWorld);
-}
-function sphereTarget(az, el, r) { return viewer.clone().addScaledVector(dirFrom(az, el), r / root.scale.x); }
-const flowers = new Map();  // name → { group, sphere, label, agent, target: Vector3, phase, speech }
-const panels = [];          // the selected agent's mosaic: { mesh, label, wid, kind, loading, at }
-const hoverables = [];      // meshes with userData.action
+let selected = null;
+const flowers = new Map();   // name → { group, circle, label, agent, color, target, phase, speech, title, talking, talkText }
+const panels = [];           // the selected agent's mosaic
+const screens = [];          // open windows, big: { wid, mesh, handles, kind, loading, at, aspectSet, focused }
+let activeScreen = null;
+const hoverables = [];
 let hovered = null;
 
 function agentWindows(agent) {
@@ -182,37 +170,50 @@ function agentWindows(agent) {
 }
 
 function makeFlower(agent) {
-  const color = new THREE.Color(agent.color || '#90c060');
+  const color = agent.color || '#90c060';
   const group = new THREE.Group();
-  // A plain circle in the widget's color (no shading: the color IS the identity).
-  const sphere = new THREE.Mesh(new THREE.CircleGeometry(FLOWER.bubbleR, 48), new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }));
-  sphere.userData = { action: 'agent', name: agent.name, label: agent.name };
-  group.add(sphere); hoverables.push(sphere);
+  const circle = new THREE.Mesh(new THREE.CircleGeometry(CLOUD.bubbleR, 48), new THREE.MeshBasicMaterial({ color: new THREE.Color(color), side: THREE.DoubleSide }));
+  circle.userData = { action: 'agent', name: agent.name, label: agent.name };
+  group.add(circle); hoverables.push(circle);
   const label = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(agent.name, { width: 512, height: 84, fg: '#fff', font: 'bold 44px -apple-system, system-ui, sans-serif', align: 'center' }), transparent: true }));
-  label.position.y = -FLOWER.bubbleR - 0.06;
+  label.position.y = -CLOUD.bubbleR - 0.06;
   group.add(label);
-  const f = { group, sphere, label, agent, color: agent.color || '#90c060', target: new THREE.Vector3(), phase: Math.random() * Math.PI * 2, speech: null, title: null };
+  const f = { group, circle, label, agent, color, target: new THREE.Vector3(), phase: Math.random() * Math.PI * 2, speech: null, title: null, talking: false };
   flowers.set(agent.name, f);
   root.add(group);
   return f;
 }
 
-function layoutFlower() {
+/** Where the sunflower's center is: your gaze (smoothed), pushed aside of open screens. */
+function cloudCenter() { return { az: gazeAz + (screens.length ? -CLOUD.aside : 0), el: screens.length ? 0.08 : 0 }; }
+function mosaicCenter() { return { az: mosaicAz + (screens.length ? MOSAIC.aside : 0), el: 0 }; }
+let mosaicAz = 0;   // the mosaic stays where the agent was selected (it does not follow the gaze)
+
+/** Sunflower targets, every frame (cheap): seed i at r = step·√i, angle i·golden; the selected agent takes seed 0. */
+function layoutCloud() {
   const names = [...flowers.keys()].sort();
-  const petals = names.filter((n) => n !== selected);
-  const sa = selected ? FLOWER.spreadAzOpen : FLOWER.spreadAz, se = selected ? FLOWER.spreadElOpen : FLOWER.spreadEl;
-  petals.forEach((n, i) => {
-    const a = -Math.PI / 2 + (i / petals.length) * Math.PI * 2;   // from the top, clockwise
-    flowers.get(n).target.copy(sphereTarget(Math.cos(a) * sa, -Math.sin(a) * se, FLOWER.r));
+  const order = selected ? [selected, ...names.filter((n) => n !== selected)] : names;
+  const c = cloudCenter();
+  order.forEach((n, i) => {
+    const f = flowers.get(n);
+    const k = selected ? i : i + 1;                   // with nothing selected, no seed sits dead center
+    const rr = CLOUD.step * Math.sqrt(k), th = k * GOLDEN;
+    let az = c.az + rr * Math.cos(th), el = c.el + rr * Math.sin(th), r = CLOUD.r;
+    if (f.talking) { r = CLOUD.r - 0.5; }               // a talking agent comes closer
+    if (n === selected) { az = mosaicCenter().az; el = 0; r = MOSAIC.r - 0.05; }
+    f.target.copy(onSphere(az, el, r));
   });
+}
+
+function setSelected(name) {
+  selected = name;
   for (const [n, f] of flowers) {
-    const isSel = n === selected;
-    f.sphere.visible = !isSel; f.label.visible = !isSel;
-    if (isSel) f.target.copy(sphereTarget(0, 0, FLOWER.r - 0.05));   // the group stays as the anchor for its speech bubble
-    if (f.title) { f.group.remove(f.title); disposeObject(f.title); const i = hoverables.indexOf(f.title); if (i !== -1) hoverables.splice(i, 1); f.title = null; }
+    const isSel = n === name;
+    f.circle.visible = !isSel; f.label.visible = !isSel;
+    if (f.title) { f.group.remove(f.title); disposeObject(f.title); unhover(f.title); f.title = null; }
     if (isSel) {
       const title = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.11), new THREE.MeshBasicMaterial({ map: textTexture(n, { width: 1024, height: 128, bg: f.color, fg: ink(f.color), font: 'bold 64px -apple-system, system-ui, sans-serif', align: 'center' }) }));
-      title.position.set(0, FLOWER.r * Math.sin(MOSAIC.el) + PANEL_H / 2 + 0.12, 0);
+      title.position.set(0, MOSAIC.r * Math.sin(MOSAIC.el) + PANEL_H / 2 + 0.12, 0);
       title.userData = { action: 'agent', name: n, label: n };
       f.group.add(title); hoverables.push(title); f.title = title;
     }
@@ -220,146 +221,138 @@ function layoutFlower() {
 }
 
 function clearPanels() {
-  for (const p of panels) { root.remove(p.mesh); root.remove(p.label); disposeObject(p.mesh); disposeObject(p.label); const i = hoverables.indexOf(p.mesh); if (i !== -1) hoverables.splice(i, 1); }
+  for (const p of panels) { root.remove(p.mesh); root.remove(p.label); disposeObject(p.mesh); disposeObject(p.label); unhover(p.mesh); }
   panels.length = 0;
 }
-
-/** The selected agent's windows as a mosaic ring around its bubble. */
+function placePanel(p) {
+  const a = -Math.PI / 2 + (p.index / Math.max(p.count, 1)) * Math.PI * 2;
+  const k = p.count <= 4 ? 1 : 1.18, c = mosaicCenter();
+  const az = c.az + Math.cos(a) * MOSAIC.az * k, el = c.el - Math.sin(a) * MOSAIC.el * k;
+  place(p.mesh, az, el, MOSAIC.r);
+  place(p.label, az, el - (PANEL_H / 2 + LABEL_H / 2 + 0.005) / MOSAIC.r, MOSAIC.r);
+}
 function buildMosaic() {
   clearPanels();
   const f = selected && flowers.get(selected);
   if (!f) return;
   const wins = agentWindows(f.agent);
-  const n = wins.length;
   wins.forEach((win, i) => {
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, PANEL_H), new THREE.MeshBasicMaterial({ color: 0x000000 }));
     mesh.userData = { action: 'window', wid: win.wid, label: win.title || win.app, kind: win.kind };
     const labelText = win.session ? `${win.session.runtime} — ${win.title}` : (win.title || win.app);
     const label = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, LABEL_H), new THREE.MeshBasicMaterial({ map: textTexture(labelText, { width: 1024, height: 92, fg: win.kind === 'terminal' ? '#cfe8ff' : '#e8e8e8', font: '30px -apple-system, system-ui, sans-serif' }), transparent: true }));
     root.add(mesh); root.add(label); hoverables.push(mesh);
-    const p = { mesh, label, wid: win.wid, kind: win.kind, loading: false, at: 0, index: i, count: n };
-    placePanel(p);
+    const p = { mesh, label, wid: win.wid, kind: win.kind, loading: false, at: 0, index: i, count: wins.length };
     const tt = win.kind === 'terminal' ? termTex.get(win.wid) : null;
     if (tt) applyTexture(mesh, tt.tex, tt.aspect);
+    placePanel(p);
     panels.push(p);
   });
 }
-
-/** A mosaic panel on the sphere: a ring around the selected agent, its label just below. */
-function placePanel(p) {
-  const a = -Math.PI / 2 + (p.index / Math.max(p.count, 1)) * Math.PI * 2;
-  const k = p.count <= 4 ? 1 : 1.18;
-  const az = Math.cos(a) * MOSAIC.az * k, el = -Math.sin(a) * MOSAIC.el * k;
-  place(p.mesh, az, el, MOSAIC.r);
-  place(p.label, az, el - (PANEL_H / 2 + LABEL_H / 2 + 0.005) / MOSAIC.r, MOSAIC.r);
-}
-function placeAll() {
-  for (const p of panels) placePanel(p);
-  if (stage && !resizing) { place(stage.mesh, 0, 0, STAGE_DIST); }
-  if (keyboard) { place(keyboard.group, 0, -0.36, STAGE_DIST - 0.1); keyboard.group.rotateX(-0.35); }
-}
+function placeMosaic() { for (const p of panels) placePanel(p); }
 
 function buildWorld() {
   if (!world || !world.displays[0]) return;
-  // An empty agents list is a hiccup (backend slow), never a reason to drop every circle.
-  if (!world.agents.length && flowers.size) return;
+  if (!world.agents.length && flowers.size) return;   // a hiccup, never a reason to drop every bubble
   const seen = new Set();
-  for (const a of world.agents) {
-    seen.add(a.name);
-    const f = flowers.get(a.name);
-    if (f) { f.agent = a; } else makeFlower(a);
-  }
-  for (const [name, f] of flowers) if (!seen.has(name)) { root.remove(f.group); disposeObject(f.group); for (const o of [f.sphere, f.title]) { const i = hoverables.indexOf(o); if (i !== -1) hoverables.splice(i, 1); } flowers.delete(name); }
+  for (const a of world.agents) { seen.add(a.name); const f = flowers.get(a.name); if (f) f.agent = a; else makeFlower(a); }
+  for (const [name, f] of flowers) if (!seen.has(name)) { root.remove(f.group); disposeObject(f.group); unhover(f.circle); if (f.title) unhover(f.title); flowers.delete(name); }
   if (selected && !flowers.has(selected)) selected = null;
-  layoutFlower();
+  setSelected(selected);
   buildMosaic();
-  if (stage && !panels.some((p) => p.wid === stage.wid)) closeStage();
-  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · circle: select · tile: big · big view: trigger clicks, stick scrolls, grip on it to resize · grip on nothing: move the display, both grips: scale it · A/B: close`;
+  for (const sc of [...screens]) if (!agentWindowsAll().has(sc.wid)) closeScreen(sc);
+  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · bubble: select · tile: open a screen · screen: grip moves, corner/both grips resize, trigger clicks, stick scrolls · nothing: collapse · A/B: close screen`;
 }
+function agentWindowsAll() { const s = new Set(); if (world) for (const d of world.displays) for (const sp of d.spaces) for (const w of sp.windows) s.add(w.wid); return s; }
 
 function select(name) {
-  selected = selected === name ? null : name;
-  closeStage();
-  layoutFlower();
+  mosaicAz = gazeAz;
+  setSelected(selected === name ? null : name);
+  buildMosaic();
+}
+function collapse() {
+  for (const sc of [...screens]) closeScreen(sc);
+  setSelected(null);
   buildMosaic();
 }
 
-// ── speech bubbles from the agents ─────────────────────────────────────────
+// ── speech: the talking agent comes closer, inflates, pulses, with its words ──
 function speech(agentName, text, phase) {
   const f = flowers.get(agentName);
   if (!f) return;
   if (f.speech) { f.group.remove(f.speech); disposeObject(f.speech); f.speech = null; }
-  if (phase !== 'playing') return;
-  const { tex, aspect } = bubbleTexture(text, f.agent.color || '#90c060');
+  f.talking = phase === 'playing';
+  if (!f.talking) return;
+  const { tex, aspect } = bubbleTexture(text, f.color);
   const w = 0.6, h = w / aspect;
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
-  const base = f.title ? f.title.position.y + 0.06 : FLOWER.bubbleR;
+  const base = f.title ? f.title.position.y + 0.06 : CLOUD.bubbleR * 1.6;
   mesh.position.set(0, base + h / 2 + 0.04, 0.02);
   f.group.add(mesh); f.speech = mesh;
 }
 
-// ── the stage: one window, big, in front ───────────────────────────────────
-let stage = null;
-function openStage(panel, label) {
-  closeStage();
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M, STAGE_WIDTH_M * 9 / 16), new THREE.MeshBasicMaterial({ color: 0x000000 }));
-  mesh.userData = { action: 'stage', wid: panel.wid, label, kind: panel.kind };
-  const frame = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M + 0.04, STAGE_WIDTH_M * 9 / 16 + 0.04), new THREE.MeshBasicMaterial({ color: 0x8ab4ff }));
+// ── screens: open windows, big, movable, resizable, several at once ────────
+function openScreen(panel, label) {
+  const existing = screens.find((s) => s.wid === panel.wid);
+  if (existing) { activeScreen = existing; return; }
+  while (screens.length >= MAX_SCREENS) closeScreen(screens[0]);
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH_M, SCREEN_WIDTH_M * 9 / 16), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+  mesh.userData = { action: 'screen', wid: panel.wid, label, kind: panel.kind };
+  const frame = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH_M + 0.04, SCREEN_WIDTH_M * 9 / 16 + 0.04), new THREE.MeshBasicMaterial({ color: 0x8ab4ff }));
   frame.position.z = -0.003; mesh.add(frame);
-  const title = new THREE.Mesh(new THREE.PlaneGeometry(STAGE_WIDTH_M, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(label, { width: 1536, height: 64, font: '34px -apple-system, system-ui, sans-serif', fg: '#fff' }), transparent: true }));
-  title.position.y = STAGE_WIDTH_M * 9 / 32 + 0.05; mesh.add(title);
-  root.add(mesh); hoverables.push(mesh);
-  // Four corner handles: grip one and move the controller to resize (aspect kept).
+  const title = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH_M, 0.07), new THREE.MeshBasicMaterial({ map: textTexture(label, { width: 1536, height: 64, font: '34px -apple-system, system-ui, sans-serif', fg: '#fff' }), transparent: true }));
+  title.position.y = SCREEN_WIDTH_M * 9 / 32 + 0.05; mesh.add(title);
   const handles = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) => {
     const h = new THREE.Mesh(new THREE.CircleGeometry(0.055, 24), new THREE.MeshBasicMaterial({ color: 0x8ab4ff, side: THREE.DoubleSide }));
     h.userData = { action: 'resize', sx, sy, label: 'resize' };
     mesh.add(h); hoverables.push(h);
     return h;
   });
-  stage = { wid: panel.wid, mesh, handles, kind: panel.kind, loading: false, at: 0, aspectSet: false, focused: false };
-  placeHandles();
-  buildKeyboard();
-  placeAll();
+  root.add(mesh); hoverables.push(mesh);
+  const sc = { wid: panel.wid, mesh, handles, kind: panel.kind, loading: false, at: 0, aspectSet: false, focused: false };
+  screens.push(sc); activeScreen = sc;
+  // new screens open where you look, stepping to the side of ones already there
+  place(mesh, gazeAz + (screens.length - 1) * 0.5 - (screens.length - 1) * 0.25, 0.02, SCREEN_DIST);
+  placeHandles(sc);
   const tt = panel.kind === 'terminal' ? termTex.get(panel.wid) : null;
-  if (tt) { applyTexture(mesh, tt.tex, tt.aspect, STAGE_WIDTH_M); stage.aspectSet = true; }
+  if (tt) { applyTexture(mesh, tt.tex, tt.aspect, SCREEN_WIDTH_M); sc.aspectSet = true; }
+  if (!keyboard) buildKeyboard();
 }
-function placeHandles() {
-  if (!stage) return;
-  const g = stage.mesh.geometry.parameters;
-  for (const h of stage.handles) h.position.set(h.userData.sx * g.width / 2, h.userData.sy * g.height / 2, 0.004);
+function placeHandles(sc) {
+  const g = sc.mesh.geometry.parameters;
+  for (const h of sc.handles) h.position.set(h.userData.sx * g.width / 2, h.userData.sy * g.height / 2, 0.004);
 }
-/** The Mac must have this window in front before any pointer or key reaches it — done once, on the first real interaction. */
-async function ensureFocused() {
-  if (!stage || stage.focused) return true;
-  const r = await post(`/window/${stage.wid}/focus`);
-  if (stage) stage.focused = Boolean(r && r.ok);
-  report({ act: 'focus-for-input', wid: stage && stage.wid, result: r });
-  return Boolean(r && r.ok);
+function closeScreen(sc) {
+  const i = screens.indexOf(sc); if (i !== -1) screens.splice(i, 1);
+  root.remove(sc.mesh);
+  for (const o of [sc.mesh, ...sc.handles]) unhover(o);
+  disposeObject(sc.mesh);
+  if (hovered === sc.mesh) setHovered(null);
+  if (activeScreen === sc) activeScreen = screens[screens.length - 1] || null;
+  if (!screens.length) destroyKeyboard();
 }
-function closeStage() {
-  if (!stage) return;
-  root.remove(stage.mesh);
-  for (const o of [stage.mesh, ...stage.handles]) { const i = hoverables.indexOf(o); if (i !== -1) hoverables.splice(i, 1); }
-  disposeObject(stage.mesh);
-  if (hovered === stage.mesh) setHovered(null);
-  stage = null;
-  destroyKeyboard();
+async function ensureFocused(sc) {
+  if (!sc || sc.focused) return Boolean(sc);
+  const r = await post(`/window/${sc.wid}/focus`);
+  sc.focused = Boolean(r && r.ok);
+  report({ act: 'focus-for-input', wid: sc.wid, result: r });
+  return sc.focused;
 }
 const loader = new THREE.TextureLoader();
-function refreshStage() {
-  if (!stage || stage.loading || performance.now() - stage.at < 200) return;
-  if (stage.kind === 'terminal' && termTex.has(stage.wid)) return;
-  const st = stage; st.loading = true;
-  const hi = st.mesh.scale.x >= 1.15;   // enlarged: ask for the window's full Retina pixels
-  loader.load(`/thumb/${st.wid}?w=${hi ? STAGE_W_HI : STAGE_W}&live=1${hi ? '&hi=1' : ''}&t=${Date.now()}`, (tex) => {
-    if (stage !== st) { tex.dispose(); return; }
+function refreshScreen(sc) {
+  if (sc.loading || performance.now() - sc.at < 200) return;
+  if (sc.kind === 'terminal' && termTex.has(sc.wid)) return;
+  sc.loading = true;
+  const hi = sc.mesh.scale.x >= 1.15;
+  loader.load(`/thumb/${sc.wid}?w=${hi ? SCREEN_W_HI : SCREEN_W}&live=1${hi ? '&hi=1' : ''}&t=${Date.now()}`, (tex) => {
+    if (!screens.includes(sc)) { tex.dispose(); return; }
     tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
-    const old = st.mesh.material.map;
-    if (!st.aspectSet && tex.image && tex.image.width) { st.aspectSet = true; applyTexture(st.mesh, tex, tex.image.width / tex.image.height, STAGE_WIDTH_M); }
-    else { st.mesh.material.map = tex; st.mesh.material.color.set(0xffffff); st.mesh.material.needsUpdate = true; }
+    const old = sc.mesh.material.map;
+    if (!sc.aspectSet && tex.image && tex.image.width) { sc.aspectSet = true; applyTexture(sc.mesh, tex, tex.image.width / tex.image.height, SCREEN_WIDTH_M); }
+    else { sc.mesh.material.map = tex; sc.mesh.material.color.set(0xffffff); sc.mesh.material.needsUpdate = true; }
     if (old && old !== tex) old.dispose();
-    st.loading = false; st.at = performance.now();
-  }, undefined, () => { st.loading = false; st.at = performance.now(); });
+    sc.loading = false; sc.at = performance.now();
+  }, undefined, () => { sc.loading = false; sc.at = performance.now(); });
 }
 function refresh(panel, live) {
   if (panel.loading) return;
@@ -373,7 +366,7 @@ function refresh(panel, live) {
   }, undefined, () => { panel.loading = false; panel.at = performance.now(); });
 }
 setInterval(() => {
-  refreshStage();
+  for (const sc of screens) refreshScreen(sc);
   const now = performance.now();
   for (const p of panels) {
     if (p.kind === 'terminal' && termTex.has(p.wid)) continue;
@@ -382,132 +375,7 @@ setInterval(() => {
   }
 }, 200);
 
-// ── pointing: XR controllers, and the mouse when flat ──────────────────────
-const raycaster = new THREE.Raycaster();
-const controllers = [0, 1].map((i) => {
-  const c = renderer.xr.getController(i);
-  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0x8ab4ff }));
-  line.scale.z = 4; c.add(line);
-  c.addEventListener('selectstart', () => { const hit = pickHit(c); act(hit ? hit.object : null, uvOf(hit)); });
-  c.addEventListener('squeezestart', () => startGrab(c));
-  c.addEventListener('squeezeend', () => endGrab(c));
-  c.addEventListener('selectend', () => { if (resizing && resizing.byTrigger) resizing = null; });
-  scene.add(c);
-  return c;
-});
-const highlight = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0x8ab4ff, transparent: true, opacity: 0.35, side: THREE.DoubleSide }));
-highlight.visible = false; scene.add(highlight);
-const tmpM = new THREE.Matrix4();
-function pickHit(controller) {
-  tmpM.identity().extractRotation(controller.matrixWorld);
-  raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
-  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
-  return raycaster.intersectObjects(hoverables, false)[0] || null;
-}
-function pick(controller) { const h = pickHit(controller); return h ? h.object : null; }
-const uvOf = (hit) => (hit && hit.uv ? { u: hit.uv.x, v: 1 - hit.uv.y } : null);   // v from the top, like the Mac
-const mouse = new THREE.Vector2(-2, -2);
-window.addEventListener('pointermove', (e) => { mouse.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1); });
-window.addEventListener('click', () => { if (renderer.xr.isPresenting) return; raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; act(hit ? hit.object : null, uvOf(hit)); });
-window.addEventListener('wheel', (e) => { if (renderer.xr.isPresenting || !stage || hovered !== stage.mesh) return; raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObject(stage.mesh, false)[0]; const uv = uvOf(hit); if (uv) post('/input', { wid: stage.wid, type: 'scroll', ...uv, dx: e.deltaX, dy: e.deltaY }); });
-window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeStage(); });
-
-let busy = false;
-async function act(obj, uv = null) {
-  if (!obj || busy) return;
-  const u = obj.userData;
-  if (u.action === 'stage') { if (uv && await ensureFocused()) post('/input', { wid: u.wid, type: 'click', ...uv }); return; }
-  if (u.action === 'resize') { const c = controllers.find((k) => pickHit(k) && pickHit(k).object === obj); if (c) { startResize(c); resizing.byTrigger = true; } return; }
-  if (u.action === 'key') { pressKey(u); return; }
-  if (u.action === 'agent') { select(u.name); report({ act: 'select', label: u.name }); return; }
-  const panel = panels.find((p) => p.wid === u.wid);
-  if (panel) openStage(panel, u.label);   // big here; the Mac is touched only when you click or type into it
-  report({ act: 'open', label: u.label });
-}
-const padState = new Map();
-let lastMoveAt = 0, lastScrollAt = 0;
-let resizing = null;   // { controller, plane, center, startDist, startScale }
-// Resize: grip while pointing anywhere at the big view (or at a corner), or
-// hold the trigger on a corner handle; move the controller in or out.
-const grabs = new Map();   // controller → { start: Vector3 (controller), rootStart: Vector3 }
-let twoHand = null;        // { startDist, startScale, startRoot, startMid }
-function startGrab(controller) {
-  const hit = pickHit(controller);
-  if (stage && hit && (hit.object.userData.action === 'resize' || hit.object.userData.action === 'stage')) { startResize(controller); return; }
-  const start = new THREE.Vector3(); start.setFromMatrixPosition(controller.matrixWorld);
-  grabs.set(controller, { start, rootStart: root.position.clone() });
-  if (grabs.size === 2) {
-    const [a, b] = [...grabs.keys()].map((c) => new THREE.Vector3().setFromMatrixPosition(c.matrixWorld));
-    twoHand = { startDist: Math.max(0.05, a.distanceTo(b)), startScale: root.scale.x, startRoot: root.position.clone(), startMid: a.clone().add(b).multiplyScalar(0.5) };
-  }
-}
-function endGrab(controller) {
-  grabs.delete(controller); twoHand = null; resizing = null;
-  flowersLaidOut = false;   // the viewer moved relative to the display: lay it out again around them
-  for (const g of grabs.values()) { g.start.setFromMatrixPosition([...grabs.keys()][0].matrixWorld); g.rootStart.copy(root.position); }
-  saveRoot();
-}
-function updateGrabs() {
-  if (twoHand && grabs.size === 2) {
-    const [a, b] = [...grabs.keys()].map((c) => new THREE.Vector3().setFromMatrixPosition(c.matrixWorld));
-    const sc = THREE.MathUtils.clamp(twoHand.startScale * a.distanceTo(b) / twoHand.startDist, 0.3, 3);
-    const mid = a.add(b).multiplyScalar(0.5);
-    // scale about the hands' starting midpoint, and follow the hands
-    root.position.copy(twoHand.startRoot).sub(twoHand.startMid).multiplyScalar(sc / twoHand.startScale).add(twoHand.startMid).add(mid.clone().sub(twoHand.startMid));
-    root.scale.setScalar(sc);
-    return;
-  }
-  for (const [c, g] of grabs) {
-    const now = new THREE.Vector3().setFromMatrixPosition(c.matrixWorld);
-    root.position.copy(g.rootStart).add(now.sub(g.start));
-  }
-}
-function startResize(controller) {
-  const hit = pickHit(controller);
-  if (!stage || !hit) return;
-  const a = hit.object.userData.action;
-  if (a !== 'resize' && a !== 'stage') return;
-  const center = new THREE.Vector3(); stage.mesh.getWorldPosition(center);
-  const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(stage.mesh.getWorldQuaternion(new THREE.Quaternion()));
-  resizing = { controller, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(normal, center), center, startDist: hit.point.distanceTo(center), startScale: stage.mesh.scale.x };
-}
-function pollGamepads() {
-  const session = renderer.xr.getSession();
-  if (!session) return;
-  const now = performance.now();
-  for (const src of session.inputSources) {
-    const gp = src.gamepad; if (!gp) continue;
-    const prev = padState.get(src) || {};
-    const b4 = gp.buttons[4] && gp.buttons[4].pressed, b5 = gp.buttons[5] && gp.buttons[5].pressed;
-    if ((b4 && !prev.b4) || (b5 && !prev.b5)) closeStage();
-    padState.set(src, { b4, b5 });
-    // pointing at the stage: the Mac's pointer follows; the thumbstick scrolls
-    if (stage && now - lastScrollAt > 90) {
-      const y = gp.axes[3] || 0;
-      if (Math.abs(y) > 0.3 && stage.focused) { const c = controllers[src.handedness === 'left' ? 0 : 1]; const uv = uvOf(c && pickHit(c)); if (uv) { lastScrollAt = now; post('/input', { wid: stage.wid, type: 'scroll', ...uv, dx: 0, dy: y * 60 }); } }
-    }
-  }
-  if (resizing) {
-    const c = resizing.controller;
-    tmpM.identity().extractRotation(c.matrixWorld);
-    raycaster.ray.origin.setFromMatrixPosition(c.matrixWorld);
-    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
-    const hit = new THREE.Vector3();
-    if (raycaster.ray.intersectPlane(resizing.plane, hit)) {
-      const d = hit.distanceTo(resizing.center);
-      const sc = THREE.MathUtils.clamp(resizing.startScale * d / Math.max(0.05, resizing.startDist), 0.4, 3.5);
-      stage.mesh.scale.setScalar(sc);
-    }
-  }
-  if (stage && stage.focused && hovered === stage.mesh && now - lastMoveAt > 80) {
-    for (const c of controllers) { const hit = pickHit(c); if (hit && hit.object === stage.mesh) { lastMoveAt = now; post('/input', { wid: stage.wid, type: 'move', ...uvOf(hit) }); break; } }
-  }
-}
-
-// ── the virtual keyboard under the stage ───────────────────────────────────
-// Rows of key meshes; trigger on one types it (server /input: Unicode text
-// for characters, key codes for the specials). Shift/Ctrl/Cmd are sticky
-// for one key. Shown only while a window is on the stage.
+// ── the keyboard: under the active screen ──────────────────────────────────
 const KEY_ROWS = [
   [['`', '~'], ['1', '!'], ['2', '@'], ['3', '#'], ['4', '$'], ['5', '%'], ['6', '^'], ['7', '&'], ['8', '*'], ['9', '('], ['0', ')'], ['-', '_'], ['=', '+'], { key: 'backspace', label: '⌫', w: 1.6 }],
   [{ key: 'tab', label: 'Tab', w: 1.4 }, 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', ['[', '{'], [']', '}'], ['\\', '|']],
@@ -516,17 +384,12 @@ const KEY_ROWS = [
   [{ mod: 'command', label: '⌘', w: 1.6 }, { text: ' ', label: 'space', w: 7 }, { key: 'left', label: '←' }, { key: 'down', label: '↓' }, { key: 'right', label: '→' }, { text: '/', label: '/' }],
 ];
 const KEY_W = 0.075, KEY_H = 0.07, KEY_GAP = 0.008;
-let keyboard = null;   // { group, keys: [{ mesh, def }] }
+let keyboard = null;
 const mods = { shift: false, ctrl: false, command: false };
-function keyLabel(def) {
-  if (typeof def === 'string') return mods.shift ? def.toUpperCase() : def;
-  if (Array.isArray(def)) return mods.shift ? def[1] : def[0];
-  return def.label;
-}
+function keyLabel(def) { if (typeof def === 'string') return mods.shift ? def.toUpperCase() : def; if (Array.isArray(def)) return mods.shift ? def[1] : def[0]; return def.label; }
 function buildKeyboard() {
   destroyKeyboard();
-  const group = new THREE.Group();
-  const keys = [];
+  const group = new THREE.Group(), keys = [];
   const totalW = Math.max(...KEY_ROWS.map((r) => r.reduce((w, d) => w + ((d && d.w) || 1) * KEY_W + KEY_GAP, 0)));
   KEY_ROWS.forEach((row, r) => {
     let x = -totalW / 2;
@@ -546,8 +409,7 @@ function buildKeyboard() {
 function paintKeys() {
   if (!keyboard) return;
   for (const { mesh, def } of keyboard.keys) {
-    const isMod = def && def.mod, on = isMod && mods[def.mod];
-    const label = keyLabel(def);
+    const isMod = def && def.mod, on = isMod && mods[def.mod], label = keyLabel(def);
     mesh.userData.label = label;
     const old = mesh.material.map;
     mesh.material.map = textTexture(label, { width: 192, height: 128, bg: on ? '#8ab4ff' : isMod ? '#3a3a48' : '#2a2a34', fg: on ? '#141414' : '#f0f0f0', font: `${label.length > 2 ? 40 : 56}px -apple-system, system-ui, sans-serif`, align: 'center', pad: 8 });
@@ -558,53 +420,195 @@ function paintKeys() {
 function destroyKeyboard() {
   if (!keyboard) return;
   root.remove(keyboard.group);
-  for (const { mesh } of keyboard.keys) { const i = hoverables.indexOf(mesh); if (i !== -1) hoverables.splice(i, 1); }
+  for (const { mesh } of keyboard.keys) unhover(mesh);
   disposeObject(keyboard.group);
   keyboard = null;
 }
+function placeKeyboard() {
+  if (!keyboard || !activeScreen) return;
+  const sc = activeScreen, g = sc.mesh.geometry.parameters;
+  keyboard.group.position.copy(sc.mesh.position);
+  keyboard.group.quaternion.copy(sc.mesh.quaternion);
+  keyboard.group.translateY(-(g.height / 2) * sc.mesh.scale.x - 0.12);
+  keyboard.group.translateZ(0.05);
+  keyboard.group.rotateX(-0.35);
+}
 async function pressKey(u) {
-  if (!stage) return;
+  const sc = activeScreen; if (!sc) return;
   const def = u.def;
   if (def && def.mod) { mods[def.mod] = !mods[def.mod]; paintKeys(); return; }
-  if (!(await ensureFocused())) return;
+  if (!(await ensureFocused(sc))) return;
   const active = ['shift', 'ctrl', 'command'].filter((m) => mods[m]);
   const text = typeof def === 'string' ? (mods.shift ? def.toUpperCase() : def) : Array.isArray(def) ? (mods.shift ? def[1] : def[0]) : def.text;
-  if (def && def.key) post('/input', { wid: stage.wid, type: 'key', key: def.key, mods: active.map((m) => (m === 'ctrl' ? 'control' : m)) });
-  else if (mods.ctrl || mods.command) post('/input', { wid: stage.wid, type: 'key', key: String(text).toLowerCase(), mods: active.map((m) => (m === 'ctrl' ? 'control' : m)) });
-  else post('/input', { wid: stage.wid, type: 'type', text });
+  const modsOut = active.map((m) => (m === 'ctrl' ? 'control' : m));
+  if (def && def.key) post('/input', { wid: sc.wid, type: 'key', key: def.key, mods: modsOut });
+  else if (mods.ctrl || mods.command) post('/input', { wid: sc.wid, type: 'key', key: String(text).toLowerCase(), mods: modsOut });
+  else post('/input', { wid: sc.wid, type: 'type', text });
   if (active.length) { mods.shift = mods.ctrl = mods.command = false; paintKeys(); }
+}
+
+// ── pointing: XR controllers, and the mouse when flat ──────────────────────
+const raycaster = new THREE.Raycaster();
+const tmpM = new THREE.Matrix4();
+function pickHit(controller) {
+  tmpM.identity().extractRotation(controller.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
+  return raycaster.intersectObjects(hoverables, false)[0] || null;
+}
+const uvOf = (hit) => (hit && hit.uv ? { u: hit.uv.x, v: 1 - hit.uv.y } : null);
+const screenOf = (obj) => screens.find((s) => s.mesh === obj || s.handles.includes(obj));
+const controllers = [0, 1].map((i) => {
+  const c = renderer.xr.getController(i);
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0x8ab4ff }));
+  line.scale.z = 4; c.add(line);
+  c.addEventListener('selectstart', () => { const hit = pickHit(c); act(hit ? hit.object : null, uvOf(hit), c); });
+  c.addEventListener('selectend', () => { if (resizing && resizing.byTrigger && resizing.controller === c) resizing = null; });
+  c.addEventListener('squeezestart', () => startGrab(c));
+  c.addEventListener('squeezeend', () => endGrab(c));
+  scene.add(c);
+  return c;
+});
+const highlight = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0x8ab4ff, transparent: true, opacity: 0.35, side: THREE.DoubleSide }));
+highlight.visible = false; scene.add(highlight);
+const mouse = new THREE.Vector2(-2, -2);
+window.addEventListener('pointermove', (e) => { mouse.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1); });
+window.addEventListener('click', () => { if (renderer.xr.isPresenting) return; raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; act(hit ? hit.object : null, uvOf(hit), null); });
+window.addEventListener('wheel', (e) => { if (renderer.xr.isPresenting) return; const sc = hovered && screenOf(hovered); if (!sc || !sc.focused) return; raycaster.setFromCamera(mouse, camera); const uv = uvOf(raycaster.intersectObject(sc.mesh, false)[0]); if (uv) post('/input', { wid: sc.wid, type: 'scroll', ...uv, dx: e.deltaX, dy: e.deltaY }); });
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (activeScreen) closeScreen(activeScreen); else collapse(); } });
+
+async function act(obj, uv, controller) {
+  if (!obj) { collapse(); report({ act: 'collapse' }); return; }
+  const u = obj.userData;
+  if (u.action === 'screen') { const sc = screenOf(obj); activeScreen = sc; if (uv && await ensureFocused(sc)) post('/input', { wid: sc.wid, type: 'click', ...uv }); return; }
+  if (u.action === 'resize') { if (controller) { startResize(controller, screenOf(obj)); if (resizing) resizing.byTrigger = true; } return; }
+  if (u.action === 'key') { pressKey(u); return; }
+  if (u.action === 'agent') { select(u.name); report({ act: 'select', label: u.name }); return; }
+  if (u.action === 'window') { const panel = panels.find((p) => p.wid === u.wid); if (panel) openScreen(panel, u.label); report({ act: 'open', label: u.label }); }
+}
+
+// grips: on a screen → move it (two grips → scale it); on a corner → resize; on nothing → move the display (two → scale it)
+const grabs = new Map();   // controller → { kind: 'root'|'screen', screen, start, objStart }
+let twoHand = null, resizing = null;
+function ctrlPos(c) { return new THREE.Vector3().setFromMatrixPosition(c.matrixWorld); }
+function startGrab(controller) {
+  const hit = pickHit(controller);
+  const sc = hit && screenOf(hit.object);
+  if (sc && hit.object.userData.action === 'resize') { startResize(controller, sc); return; }
+  const kind = sc ? 'screen' : 'root';
+  const target = sc ? sc.mesh : root;
+  if (sc) activeScreen = sc;
+  grabs.set(controller, { kind, screen: sc, start: ctrlPos(controller), objStart: target.position.clone() });
+  const both = [...grabs.values()];
+  if (both.length === 2) {
+    const same = both[0].kind === both[1].kind && both[0].screen === both[1].screen;
+    const [a, b] = [...grabs.keys()].map(ctrlPos);
+    const obj = same ? target : null;
+    twoHand = obj ? { obj, startDist: Math.max(0.05, a.distanceTo(b)), startScale: obj.scale.x, startPos: obj.position.clone(), startMid: a.clone().add(b).multiplyScalar(0.5) } : null;
+  }
+}
+function endGrab(controller) {
+  grabs.delete(controller); twoHand = null; resizing = null;
+  for (const [c, g] of grabs) { g.start = ctrlPos(c); g.objStart = (g.kind === 'root' ? root : g.screen.mesh).position.clone(); }
+  saveRoot();
+}
+function updateGrabs() {
+  if (twoHand && grabs.size === 2) {
+    const [a, b] = [...grabs.keys()].map(ctrlPos);
+    const sc = THREE.MathUtils.clamp(twoHand.startScale * a.distanceTo(b) / twoHand.startDist, twoHand.obj === root ? 0.3 : 0.4, twoHand.obj === root ? 3 : 3.5);
+    twoHand.obj.scale.setScalar(sc);
+    if (twoHand.obj !== root) return;
+    const mid = a.add(b).multiplyScalar(0.5);
+    root.position.copy(twoHand.startPos).sub(twoHand.startMid).multiplyScalar(sc / twoHand.startScale).add(twoHand.startMid).add(mid.sub(twoHand.startMid));
+    return;
+  }
+  for (const [c, g] of grabs) {
+    const delta = ctrlPos(c).sub(g.start);
+    if (g.kind === 'root') root.position.copy(g.objStart).add(delta);
+    else { g.screen.mesh.position.copy(g.objStart).add(delta.divideScalar(root.scale.x)); g.screen.mesh.lookAt(viewerWorld); }
+  }
+  if (resizing) {
+    const c = resizing.controller;
+    tmpM.identity().extractRotation(c.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(c.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
+    const hit = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(resizing.plane, hit)) {
+      const d = hit.distanceTo(resizing.center);
+      resizing.screen.mesh.scale.setScalar(THREE.MathUtils.clamp(resizing.startScale * d / Math.max(0.05, resizing.startDist), 0.4, 3.5));
+    }
+  }
+}
+function startResize(controller, sc) {
+  const hit = pickHit(controller);
+  if (!sc || !hit) return;
+  const center = new THREE.Vector3(); sc.mesh.getWorldPosition(center);
+  const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(sc.mesh.getWorldQuaternion(new THREE.Quaternion()));
+  resizing = { controller, screen: sc, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(normal, center), center, startDist: hit.point.distanceTo(center), startScale: sc.mesh.scale.x };
+}
+
+const padState = new Map();
+let lastMoveAt = 0, lastScrollAt = 0;
+function pollGamepads() {
+  const session = renderer.xr.getSession();
+  if (!session) return;
+  const now = performance.now();
+  for (const src of session.inputSources) {
+    const gp = src.gamepad; if (!gp) continue;
+    const prev = padState.get(src) || {};
+    const b4 = gp.buttons[4] && gp.buttons[4].pressed, b5 = gp.buttons[5] && gp.buttons[5].pressed;
+    if ((b4 && !prev.b4) || (b5 && !prev.b5)) { if (activeScreen) closeScreen(activeScreen); }
+    padState.set(src, { b4, b5 });
+    const y = gp.axes[3] || 0;
+    if (Math.abs(y) > 0.3 && now - lastScrollAt > 90) {
+      const c = controllers[src.handedness === 'left' ? 0 : 1]; const hit = c && pickHit(c); const sc = hit && screenOf(hit.object);
+      if (sc && sc.focused && hit.object === sc.mesh) { lastScrollAt = now; post('/input', { wid: sc.wid, type: 'scroll', ...uvOf(hit), dx: 0, dy: y * 60 }); }
+    }
+  }
+  if (now - lastMoveAt > 80) {
+    for (const c of controllers) { const hit = pickHit(c); const sc = hit && screenOf(hit.object); if (sc && sc.focused && hit.object === sc.mesh) { lastMoveAt = now; post('/input', { wid: sc.wid, type: 'move', ...uvOf(hit) }); break; } }
+  }
 }
 
 function setHovered(obj) {
   hovered = obj;
-  if (!obj || !obj.geometry.parameters.width) { highlight.visible = false; if (obj) obj.scale.setScalar(1.12); return; }
+  if (!obj || !obj.geometry.parameters.width) { highlight.visible = false; return; }
   const g = obj.geometry.parameters;
-  highlight.scale.set(g.width + 0.03, g.height + 0.03, 1);
+  highlight.scale.set(g.width * obj.scale.x + 0.03, g.height * obj.scale.y + 0.03, 1);
   obj.getWorldPosition(highlight.position); obj.getWorldQuaternion(highlight.quaternion);
   highlight.translateZ(-0.002);
   highlight.visible = true;
 }
 
+// ── the frame ──────────────────────────────────────────────────────────────
 const clock = new THREE.Clock();
-const viewer = new THREE.Vector3();
-let flowersLaidOut = false;   // layout needs the viewer, known from the first frame on
-let rebaseFrames = 0;
+const fwd = new THREE.Vector3();
 renderer.setAnimationLoop(() => {
   pollGamepads();
   if (rebase && renderer.xr.isPresenting && ++rebaseFrames > 5 && rebaseToHead()) rebase = false;
   const eye = headY == null ? EYE_Y : headY;
-  viewerWorld.set(0, eye, 0); viewer.copy(viewerWorld); root.worldToLocal(viewer);   // the viewer, in root space: everything is placed around it
-  if (!flowersLaidOut) { layoutFlower(); placeAll(); flowersLaidOut = true; }
+  viewerWorld.set(0, eye, 0); viewer.copy(viewerWorld); root.worldToLocal(viewer);
+  // where you look, as an azimuth in root space; the bubbles follow it slowly (a swarm, not a HUD)
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  fwd.set(0, 0, -1).applyQuaternion(cam.quaternion);
+  const rootYaw = new THREE.Euler().setFromQuaternion(root.quaternion, 'YXZ').y;
+  headYaw = Math.atan2(fwd.x, -fwd.z) - rootYaw;
+  let d = headYaw - gazeAz; d = Math.atan2(Math.sin(d), Math.cos(d));
+  gazeAz += d * CLOUD.follow;
   updateGrabs();
+  layoutCloud();
+  placeMosaic();
+  placeKeyboard();
   const t = clock.getElapsedTime();
   for (const f of flowers.values()) {
     f.group.position.lerp(f.target, 0.08);
     f.group.position.y += Math.sin(t * 1.3 + f.phase) * 0.0025;
-    f.sphere.scale.setScalar(THREE.MathUtils.lerp(f.sphere.scale.x, hovered === f.sphere ? 1.12 : 1, 0.2));
+    const base = f.talking ? 1.5 + Math.sin(t * 6) * 0.12 : 1;         // inflated and pulsing while it talks
+    f.circle.scale.setScalar(THREE.MathUtils.lerp(f.circle.scale.x, hovered === f.circle ? base * 1.12 : base, 0.2));
     f.group.lookAt(viewerWorld);
   }
   let h = null;
-  if (renderer.xr.isPresenting) { for (const c of controllers) h = pick(c) || h; }
+  if (renderer.xr.isPresenting) { for (const c of controllers) h = (pickHit(c) || {}).object || h; }
   else { raycaster.setFromCamera(mouse, camera); const hit = raycaster.intersectObjects(hoverables, false)[0]; h = hit ? hit.object : null; }
   if (h !== hovered) setHovered(h);
   renderer.render(scene, camera);

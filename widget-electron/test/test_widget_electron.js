@@ -1062,9 +1062,9 @@ test('bubbles: 🔇 and closing silence the agent; a bubble goes when the agent 
   assert.match(readSrc('renderer', 'widget.js'), /onSpeechStop\(\(\) => stopCurrentSpeech\(\)\)/);
   const ended = extractFunctionBody(bubblesSrc, 'function speakEnded(speakId) {');
   assert.match(ended, /b\.ended = true;[\s\S]*if \(b\.pinned \|\| b\.voice\) continue;/, 'a bubble being hovered, typed into or dictating stays');
-  assert.match(bubblesSrc, /case 'pin':[\s\S]*?if \(!b\.pinned && b\.ended && !b\.voice\) \{ closeSoon\(b, 3000\)/, 'once the voice has finished, the bubble goes 3 s after the pointer leaves');
+  assert.match(bubblesSrc, /case 'pin':[\s\S]*?if \(!b\.pinned && b\.ended && !b\.voice\) \{ closeSoon\(b, BUBBLE_LINGER_MS\)/, 'once the voice has finished, the bubble goes 3 s after the pointer leaves');
   assert.doesNotMatch(readSrc('renderer', 'bubble.html'), /class="circle always"/, 'the mute circle is hover-only like the others');
-  assert.match(ended, /closeSoon\(b, 800\)/);
+  assert.match(ended, /closeSoon\(b, BUBBLE_LINGER_MS\)/, 'the same linger after the voice ends as after the pointer leaves');
   const body = extractFunctionBody(bubblesSrc, 'function anchorPositions(workArea, anchor, heights, width = BUBBLE_WIDTH) {');
   const fn = new Function('BUBBLE_WIDTH', 'BUBBLE_MARGIN', `function anchorPositions(workArea, anchor, heights, width = BUBBLE_WIDTH) ${body} return anchorPositions;`)(340, 10);
   const area = { x: 0, y: 25, width: 1728, height: 1000 };

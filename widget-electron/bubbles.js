@@ -35,6 +35,7 @@ const BUBBLE_MAX_HEIGHT = 320;
 const BUBBLE_MARGIN = 10;     // from the screen edge, and between stacked bubbles
 const BUBBLE_BOTTOM = 12;     // above the Dock / bottom of the work area
 const BUBBLE_TTL_MS = 20000;
+const BUBBLE_LINGER_MS = 3000;   // after the voice ends — and after the pointer leaves a bubble whose voice ended
 const BUBBLE_MAX_PER_STACK = 5;
 
 /**
@@ -204,7 +205,8 @@ function createBubbles({ sources, log, onAction }) {
         return;
       case 'pin':
         b.pinned = Boolean(payload.on);
-        if (!b.pinned && b.ended && !b.voice) { closeSoon(b, 3000); return; }   // the voice finished while hovered: go once the pointer leaves
+        log.info('bubble', `${b.agentName}: pointer ${b.pinned ? 'in' : 'out'}${b.ended ? ' (voice ended)' : ''}`);
+        if (!b.pinned && b.ended && !b.voice) { closeSoon(b, BUBBLE_LINGER_MS); return; }   // the voice finished while hovered: go once the pointer leaves
         armTimer(b);
         return;
       case 'dismiss':
@@ -271,8 +273,9 @@ function createBubbles({ sources, log, onAction }) {
     for (const b of bubbles) {
       if (b.speakId !== speakId || b.closing || b.win.isDestroyed()) continue;
       b.ended = true;
-      if (b.pinned || b.voice) continue;   // in use: it goes 3 s after the pointer leaves ('pin' off), or with the dictation
-      closeSoon(b, 800);
+      log.info('bubble', `${b.agentName}: voice ended${b.pinned ? ' (hovered: stays until the pointer leaves)' : ''}`);
+      if (b.pinned || b.voice) continue;   // in use: it goes BUBBLE_LINGER_MS after the pointer leaves ('pin' off), or with the dictation
+      closeSoon(b, BUBBLE_LINGER_MS);
     }
   }
 
