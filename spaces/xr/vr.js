@@ -259,7 +259,7 @@ function layoutCloud() {
     const f = flowers.get(n);
     if (n === selected) { f.r = MOSAIC.r - 0.05; f.target.copy(onSphere(mosaicCenter().az, mosaicCenter().el, f.r)); return; }
     const k = selected ? i : i + 1;                   // with nothing selected, no seed sits dead center
-    const rr = CLOUD.step * Math.sqrt(k), th = k * GOLDEN;
+    const rr = CLOUD.step * root.scale.x * Math.sqrt(k), th = k * GOLDEN;   // spacing follows the display's scale: smaller bubbles, closer together
     const a = avoid(c.az + rr * Math.cos(th), c.el + rr * Math.sin(th), obs);
     f.r = f.talking ? CLOUD.r - 0.5 : CLOUD.r;         // a talking agent comes closer
     f.target.copy(onSphere(a.az, a.el, f.r));
