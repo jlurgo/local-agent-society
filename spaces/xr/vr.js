@@ -275,8 +275,7 @@ function rememberMosaic() {
 function clearPanels() {
   for (const p of panels) { root.remove(p.mesh); root.remove(p.label); disposeObject(p.mesh); disposeObject(p.label); unhover(p.mesh); }
   panels.length = 0;
-  activeTile = null;
-  destroyKeyboard();
+  setActiveTile(null);
 }
 /** Skyline masonry: equal columns; a tile spans as many columns as its (scaled) width needs and lands where it fits lowest. */
 function layoutMosaic() {
@@ -355,10 +354,31 @@ async function ensureFocused(p) {
   report({ act: 'focus-for-input', wid: p.wid, result: r });
   return p.focused;
 }
+let bigButton = null;
 function setActiveTile(p) {
   activeTile = p;
   if (p && !keyboard) buildKeyboard();
   if (!p) destroyKeyboard();
+  if (bigButton) { root.remove(bigButton); unhover(bigButton); disposeObject(bigButton); bigButton = null; }
+  if (p) {
+    bigButton = new THREE.Mesh(new THREE.PlaneGeometry(0.11, 0.11), new THREE.MeshBasicMaterial({ map: textTexture(p.scale > 1.3 ? '⤡' : '⤢', { width: 128, height: 128, bg: '#8ab4ff', fg: '#141414', font: 'bold 84px -apple-system, system-ui, sans-serif', align: 'center', pad: 4 }) }));
+    bigButton.userData = { action: 'big', label: 'bigger / smaller' };
+    root.add(bigButton); hoverables.push(bigButton);
+  }
+}
+/** The ⤢ button sits at the active tile's top-right corner. */
+function placeBigButton() {
+  if (!bigButton || !activeTile) return;
+  const p = activeTile;
+  bigButton.position.copy(p.mesh.position); bigButton.quaternion.copy(p.mesh.quaternion);
+  bigButton.translateX((p.w / 2) * p.scale - 0.07); bigButton.translateY((p.h / 2) * p.scale - 0.07); bigButton.translateZ(0.01);
+}
+/** Big = the full masonry width; back = one column (or two for a wide terminal). */
+function toggleBig(p) {
+  const full = (MOSAIC.cols * MOSAIC.colW + (MOSAIC.cols - 1) * MOSAIC.gap) / p.w;
+  setTileScale(p, p.scale > 1.3 ? 1 : full);
+  rememberMosaic();
+  setActiveTile(p);
 }
 
 function buildWorld() {
@@ -373,7 +393,7 @@ function buildWorld() {
   const same = f && panels.length === wids.length && panels.every((p) => wids.includes(p.wid));
   setSelected(selected);
   if (!same) buildMosaic();   // only re-flow when the set of windows changed: a refresh must not undo your sizes and order
-  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · bubble: select · tile: trigger clicks (and focuses it on the Mac), stick scrolls, grip drags it into another slot, both grips resize it · grip on nothing moves everything · nothing: collapse`;
+  hud.textContent = `LAS Spaces — ${flowers.size} agents · ${renderer.xr.isPresenting ? 'in VR' : 'flat (press Enter VR)'} · bubble: select · tile: trigger clicks (and focuses it on the Mac), ⤢ makes it big, both grips resize it freely, one grip drags it, stick scrolls · grip on nothing moves everything · nothing: collapse`;
 }
 function select(name) {
   if (name === selected) return;   // already open; collapse is a trigger on nothing (or Esc)
@@ -536,6 +556,7 @@ async function act(obj, uv, controller) {
   if (!obj) { if (rayNearMosaic(controller)) return; collapse(); report({ act: 'collapse' }); return; }   // a near miss around the tiles is not a collapse
   const u = obj.userData;
   if (u.action === 'title') return;
+  if (u.action === 'big') { if (activeTile) toggleBig(activeTile); return; }
   if (u.action === 'key') { pressKey(u); return; }
   if (u.action === 'agent') { select(u.name); report({ act: 'select', label: u.name }); return; }
   if (u.action === 'window') {
@@ -687,6 +708,7 @@ renderer.setAnimationLoop(() => {
   gazeAz += d * CLOUD.follow;
   gazeEl += (THREE.MathUtils.clamp(headPitch, -0.7, 0.7) - gazeEl) * CLOUD.follow;
   updateGrabs();
+  placeBigButton();
   layoutCloud();
   placeMosaic();
   placeKeyboard();
