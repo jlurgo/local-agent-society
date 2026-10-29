@@ -29,6 +29,11 @@
     <!-- Inline, NOT a full-screen overlay — settings mode keeps the real
          name/log visible above it. See widget.js's setSettingsOpen. -->
     <div id="settings" class="settings settings-inline hidden">
+      <!-- Shown only while a newer version is published (main.js "Update notice"). -->
+      <div id="updateRow" class="settings-row update-row hidden">
+        <span id="updateText">Update available</span>
+        <button id="updateCopy" type="button" title="Copies the command — run it in any terminal">Copy las update</button>
+      </div>
       <div class="settings-row">
         <label for="color">Color</label>
         <input id="color" type="color" />
@@ -87,6 +92,10 @@
       <div class="settings-row">
         <label for="tileTickMs" title="How often every widget checks which Space it is on">Heartbeat (ms)</label>
         <input id="tileTickMs" type="number" min="100" max="10000" step="100" />
+      </div>
+      <div class="settings-row">
+        <label for="updateCheck" id="updateChecked" title="Every widget asks once a minute; the backend fetches GitHub every 15 min">Updates</label>
+        <button id="updateCheck" type="button">Check now</button>
       </div>
     </div>
 

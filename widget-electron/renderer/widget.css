@@ -480,6 +480,26 @@ html, body {
   min-width: 0;
 }
 
+/* Update notice (widget.js applyUpdateStatus): a dot on the gear, and a row
+ * atop the settings panel while a newer version is published. */
+#gear { position: relative; }
+#gear.has-update::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ff9f0a;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.settings-row.update-row {
+  font-weight: 600;
+  color: #ff9f0a;
+}
+.settings-row.update-row.hidden { display: none; }
+
 /* A heading row inside the panel ("All widgets"): the rows under it are
  * app-wide settings, not this agent's. */
 .settings-row.settings-group {

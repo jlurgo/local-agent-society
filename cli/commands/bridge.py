@@ -44,6 +44,7 @@ from urllib.parse import quote
 
 import click
 
+from cli.update_notice import print_update_notice
 from cli import api
 from cli.commands import complete_agent_names
 from cli.commands._agent_common import _agent_name_from_cwd, resolve_agent_name
@@ -568,6 +569,7 @@ def _launch_claude(args, no_widget=False, account=None, pty=None):
     if not shutil.which("claude"):
         click.echo("Error: claude not found on PATH.", err=True)
         raise SystemExit(1)
+    print_update_notice()
     name = _agent_name_from_cwd()
     _chain(name, widget=not no_widget)
     runtime = claude_runtime()
@@ -792,6 +794,7 @@ def codex_cmd(command, no_widget, intercept_url, port, codex_args):
         click.echo("Error: codex not found on PATH (install the Codex CLI, or pass --exec).", err=True)
         raise SystemExit(1)
     _chain(name, widget=not no_widget)
+    print_update_notice()
     if command or os.environ.get("LAS_CODEX_CMD"):
         command = command or os.environ.get("LAS_CODEX_CMD")
         _exec(bridge_argv("exec", name, _common(["--exec", command], intercept_url, port)))
@@ -815,6 +818,7 @@ def shell_cmd(name, yes, run_all, no_widget, intercept_url, port):
     """Connect a plain terminal (no AI) to LAS here: messages print, commands run after a y/N, output goes back to the sender."""
     name = resolve_agent_name(name)
     _chain(name, widget=not no_widget)
+    print_update_notice()
     _sign_terminal(name, "shell")
     extra = (["--yes"] if yes else []) + (["--all"] if run_all else [])
     _exec(bridge_argv("shell", name, _common(extra, intercept_url, port)))

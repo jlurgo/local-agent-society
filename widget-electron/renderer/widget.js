@@ -440,6 +440,49 @@ tileTickMsEl.addEventListener('change', async () => {
 });
 window.las.onTileSettings(applyTileSettingsToDom);
 
+// ── Update notice: a dot on the gear and a row atop the panel ─────────────
+// main.js polls the backend (backend/updates.py) and pushes every change, so
+// a widget left open learns about a new version within a minute.
+const updateRowEl = document.getElementById('updateRow');
+const updateTextEl = document.getElementById('updateText');
+const updateCopyEl = document.getElementById('updateCopy');
+const updateCheckEl = document.getElementById('updateCheck');
+const updateCheckedEl = document.getElementById('updateChecked');
+
+function applyUpdateStatus(status) {
+  const available = !!(status && status.available);
+  gearEl.classList.toggle('has-update', available);
+  gearEl.title = available ? 'Settings — update available' : 'Settings';
+  updateRowEl.classList.toggle('hidden', !available);
+  if (available) {
+    updateTextEl.textContent = `Update available (${status.behind} new)`;
+    updateRowEl.title = (status.commits || []).map((c) => `${c.sha} ${c.subject}`).join('\n');
+  }
+  const when = status && status.checked_at ? status.checked_at.slice(11, 16) : null;
+  updateCheckedEl.textContent = !status ? 'Updates'
+    : status.error ? 'Updates · check failed'
+    : available ? `Updates · ${when}` : `Up to date · ${when}`;
+  if (status && status.error) updateCheckedEl.title = status.error;
+}
+
+updateCopyEl.addEventListener('click', async () => {
+  await window.las.copyUpdateCommand();
+  updateCopyEl.textContent = 'Copied — run it';
+  setTimeout(() => { updateCopyEl.textContent = 'Copy las update'; }, 2500);
+});
+updateCheckEl.addEventListener('click', async () => {
+  updateCheckEl.disabled = true;
+  updateCheckEl.textContent = 'Checking…';
+  try {
+    applyUpdateStatus(await window.las.checkUpdate());
+  } finally {
+    updateCheckEl.disabled = false;
+    updateCheckEl.textContent = 'Check now';
+  }
+});
+window.las.onUpdateStatus(applyUpdateStatus);
+window.las.getUpdateStatus().then(applyUpdateStatus).catch(() => {});
+
 colorEl.addEventListener('input', () => persist({ color: colorEl.value }));
 opacityEl.addEventListener('input', () => persist({ opacity: Number(opacityEl.value) }));
 alwaysOnTopEl.addEventListener('change', () => persist({ alwaysOnTop: alwaysOnTopEl.checked }));

@@ -39,7 +39,7 @@
  * to that one function and no in-process Apple Events appear anywhere.
  */
 
-const { app, BrowserWindow, ipcMain, screen, session, powerMonitor, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, session, powerMonitor, shell, clipboard } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -57,6 +57,10 @@ const spaces = require('./lib/spaces');
 // sources are left untouched — only their Info.plist registration changed.
 const PROTOCOL_SCHEME = 'localagentsociety';
 const REGISTRY_URL = process.env.LAS_REGISTRY_URL || 'http://localhost:8700';
+// Update notice (backend/updates.py): how often every widget asks, and what the panel offers to copy.
+const UPDATE_POLL_MS = 60 * 1000;
+const UPDATE_CHECK_TIMEOUT_MS = 90 * 1000;
+const UPDATE_COMMAND = 'las update';
 
 // ── persistent logging (session/widget.log) ─────────────────────────────────
 // Launched via `open` (see start.sh), so this process's stdout/stderr goes
@@ -2149,6 +2153,32 @@ app.whenReady().then(async () => {
     }
     return next;
   });
+
+  // Update notice: the backend fetches the checkout's upstream in the
+  // background (backend/updates.py) and answers from memory, so polling it
+  // every minute is free; every widget's gear gets a dot and its panel a row
+  // the moment a new version is published, even with the widget already open.
+  let updateStatus = null;
+  const broadcastUpdate = (s) => {
+    if (!s || JSON.stringify(s) === JSON.stringify(updateStatus)) return updateStatus;
+    updateStatus = s;
+    for (const win of windows.values()) {
+      if (!win.isDestroyed()) win.webContents.send('update:status', s);
+    }
+    return s;
+  };
+  const pollUpdate = async (method = 'GET', urlPath = '/update/status') => {
+    try {
+      const res = await fetch(`${REGISTRY_URL}${urlPath}`, { method, signal: AbortSignal.timeout(UPDATE_CHECK_TIMEOUT_MS) });
+      if (res.ok) return broadcastUpdate(await res.json());
+    } catch { /* backend restarting — keep the last answer */ }
+    return updateStatus;
+  };
+  pollUpdate();
+  setInterval(pollUpdate, UPDATE_POLL_MS);
+  ipcMain.handle('update:get', () => updateStatus);
+  ipcMain.handle('update:check', () => pollUpdate('POST', '/update/check'));
+  ipcMain.handle('update:copy-command', () => { clipboard.writeText(UPDATE_COMMAND); return UPDATE_COMMAND; });
 
   const explicit = resolveInitialAgentNames(process.argv);
   if (explicit) {

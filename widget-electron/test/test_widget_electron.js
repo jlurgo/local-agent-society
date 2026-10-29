@@ -1793,3 +1793,25 @@ test('a clip never starts while the mic is held, and the one playing pauses and 
   assert.match(onHeld.slice(0, 500), /currentSpeech\.resume\(\)/);
   assert.match(readSrc('preload.js'), /onMicHeld: \(cb\) =>/);
 });
+
+test('update notice: main polls the backend and pushes the status to every widget', () => {
+  const mainSrc = readSrc('main.js');
+  assert.match(mainSrc, /\/update\/status/);
+  assert.match(mainSrc, /setInterval\(pollUpdate, UPDATE_POLL_MS\)/);
+  assert.match(mainSrc, /webContents\.send\('update:status'/);
+  for (const ch of ['update:get', 'update:check', 'update:copy-command']) {
+    assert.ok(mainSrc.includes(`ipcMain.handle('${ch}'`), ch);
+  }
+  const preload = readSrc('preload.js');
+  for (const fn of ['getUpdateStatus', 'checkUpdate', 'copyUpdateCommand', 'onUpdateStatus']) assert.ok(preload.includes(fn), fn);
+});
+
+test('update notice: the gear gets a dot and the panel a row only while an update is available', () => {
+  const html = readSrc('renderer/index.html');
+  assert.match(html, /id="updateRow" class="settings-row update-row hidden"/);
+  assert.match(html, /id="updateCheck"/);
+  const js = readSrc('renderer/widget.js');
+  assert.match(js, /gearEl\.classList\.toggle\('has-update', available\)/);
+  assert.match(js, /updateRowEl\.classList\.toggle\('hidden', !available\)/);
+  assert.match(readSrc('renderer/widget.css'), /#gear\.has-update::after/);
+});

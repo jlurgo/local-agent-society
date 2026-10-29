@@ -416,6 +416,10 @@ def tts_drainer():
 
 threading.Thread(target=tts_drainer, daemon=True).start()
 
+import updates
+if not os.environ.get("LAS_NO_UPDATE_CHECK"):
+    updates.start()
+
 
 # ── models ────────────────────────────────────────────────────────────────────
 
@@ -555,6 +559,18 @@ class TerminalRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.now().isoformat()}
+
+
+@app.get("/update/status")
+def update_status():
+    """Is this checkout behind its upstream? From memory — refreshed in the background (backend/updates.py)."""
+    return updates.status()
+
+
+@app.post("/update/check")
+def update_check():
+    """Fetch the upstream now instead of waiting for the next background check."""
+    return updates.check_now()
 
 
 

@@ -2,6 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 import click
+from cli.update_notice import print_update_notice
 from cli import api
 
 # Root of the repo — two levels up from this file (cli/commands/system.py)
@@ -43,6 +44,7 @@ def status():
 def start_cmd():
     """Start the backend and tray app."""
     _run_script("start.sh")
+    print_update_notice()
 
 
 @click.command("stop")

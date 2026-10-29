@@ -43,7 +43,16 @@ cd local-agent-society
 ./install.sh
 ```
 
-This builds the Electron widget, installs Python deps, fetches the Kokoro TTS model, clones/updates vortexia next to this repo, registers both launchd jobs, and installs the `las` CLI.
+This builds the Electron widget, installs Python deps, fetches the Kokoro TTS model, clones/updates vortexia next to this repo, registers both launchd jobs, and installs the `las` CLI. It needs a Node >= 22.12 (it picks Homebrew's first, then PATH, then nvm) and never creates an agent — that's `las agent new`.
+
+### Updates
+
+The backend fetches this checkout's upstream every 15 minutes (`backend/updates.py`; `GET /update/status`, `POST /update/check` to fetch now). When new commits are published:
+
+- every widget's ⚙ gets an orange dot within a minute, and the settings panel opens with *Update available (N new)* — hover it for the commit list, click *Copy las update* to put the command on the clipboard;
+- `las claude`, `las codex`, `las shell` and `las start` print one line saying so.
+
+The *All widgets → Updates* row shows when it last checked and has *Check now*. Apply with `las update` (git pull + install.sh). `LAS_NO_UPDATE_CHECK=1` turns the background fetch off.
 
 ---
 

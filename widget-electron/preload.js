@@ -54,6 +54,15 @@ contextBridge.exposeInMainWorld('las', {
   /** Another widget changed the tile settings. @param {(settings: object) => void} cb */
   onTileSettings: (cb) => ipcRenderer.on('tiles:changed', (_e, settings) => cb(settings)),
 
+  /** Update notice: { available, behind, commits: [{sha, subject}], checked_at, error } or null (backend/updates.py). */
+  getUpdateStatus: () => ipcRenderer.invoke('update:get'),
+  /** Fetch the upstream now; resolves to the fresh status. */
+  checkUpdate: () => ipcRenderer.invoke('update:check'),
+  /** Put the update command on the clipboard; resolves to it. */
+  copyUpdateCommand: () => ipcRenderer.invoke('update:copy-command'),
+  /** The status changed (a new version appeared, or was installed). @param {(status: object) => void} cb */
+  onUpdateStatus: (cb) => ipcRenderer.on('update:status', (_e, status) => cb(status)),
+
   /** Grow/shrink this window by (dw, dh) pixels — see .resize-handle in widget.css. */
   resizeBy: (dw, dh) => ipcRenderer.send('window:resize-by', dw, dh),
 
