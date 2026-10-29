@@ -46,6 +46,7 @@ const os = require('node:os');
 const { spawn, execFile } = require('node:child_process');
 const Store = require('electron-store');
 const { createTray } = require('./tray');
+const { createBubbles } = require('./bubbles');
 const spaces = require('./lib/spaces');
 
 // Real protocol scheme, claimed by this Electron app as of the full cutover
@@ -105,10 +106,20 @@ const SESSION_LOG_PATH = resolveSessionLogPath();
 function resolveWidgetSources() {
   const root = findCheckoutRoot();
   const live = root ? path.join(root, 'widget-electron') : null;
-  if (live && fs.existsSync(path.join(live, 'renderer', 'index.html')) && fs.existsSync(path.join(live, 'preload.js'))) {
-    return { rendererDir: path.join(live, 'renderer'), preloadPath: path.join(live, 'preload.js'), live: true };
-  }
-  return { rendererDir: path.join(__dirname, 'renderer'), preloadPath: path.join(__dirname, 'preload.js'), live: false };
+  // Each file from the checkout when it has it, else the packaged copy —
+  // so a checkout older than the build (a file this build added) still runs.
+  const pick = (...rel) => {
+    const candidate = live ? path.join(live, ...rel) : null;
+    return candidate && fs.existsSync(candidate) ? candidate : path.join(__dirname, ...rel);
+  };
+  const preloadPath = pick('preload.js');
+  return {
+    rendererDir: path.dirname(pick('renderer', 'index.html')),
+    preloadPath,
+    bubbleDir: path.dirname(pick('renderer', 'bubble.html')),
+    bubblePreloadPath: pick('bubble-preload.js'),
+    live: Boolean(live) && preloadPath !== path.join(__dirname, 'preload.js'),
+  };
 }
 const WIDGET_SOURCES = resolveWidgetSources();
 
@@ -609,6 +620,9 @@ const DEFAULT_PREFS = {
   // On by default per explicit request — most agents on this machine want
   // the ambient "still here" banner while off-Space/occluded.
   expandWhenHidden: true,
+  // What this agent says out loud also pops up as a speech bubble at the
+  // screen edge when its widget is on another Space (see bubbles.js).
+  speechBubbles: true,
   // Mic dictation language hint for Whisper — independent of the agent's
   // TTS voice locale (an agent can speak English while being dictated to in
   // Spanish). Defaults to Spanish per explicit request; 'auto' lets Whisper
@@ -1239,6 +1253,15 @@ ipcMain.handle('vortexia:send', async (event, toName, text) => {
     log.error('mic', 'vortexia:send failed: could not resolve sending agent for this window');
     return { ok: false, error: 'could not resolve sending agent for this window' };
   }
+  return sendHumanMessage(fromName, toName, text);
+});
+
+/** A human's words for `toName`, on behalf of `fromName`'s widget — a mic
+ * dictation, or a typed reply from a speech bubble. Same path either way:
+ * the backend picks the session (`sessions.target`), the agent's own inbox
+ * is the fallback when the backend is unreachable. */
+async function sendHumanMessage(fromName, toName, text) {
+  const win = windows.get(fromName);
   // First choice: the backend's /agents/send — the one place that knows the
   // recipient's connected sessions and its own `sessions.target` choice
   // (.las-agent.json, docs/adr/0005): last-used session, all of them, or
@@ -1302,6 +1325,83 @@ ipcMain.handle('vortexia:send', async (event, toName, text) => {
     }
     return { ok: false, error: String(err) };
   }
+}
+
+// ── speech bubbles (bubbles.js) ────────────────────────────────────────────
+// What an agent says out loud (a `kind: "speak"` envelope — the short
+// spoken summary of its results) also pops up at the screen edge, on the
+// side its Space lies, when its widget is NOT on the Space being looked at.
+// On the current Space the face itself shows the text, so no bubble. The
+// bubble's buttons come back here as actions: go there, answer by voice
+// (go there and start a dictation), answer by text (same delivery as a
+// dictation).
+let bubbles = null;
+const seenSpeakIds = new Set();
+
+function maybeBubble(name, win, envelope) {
+  if (!bubbles || !envelope || envelope.kind !== 'speak') return;
+  const text = typeof envelope.text === 'string' ? envelope.text.trim() : '';
+  if (!text) return;
+  if (text.toLowerCase() === 'ok') return;           // the mic self-test's audible "OK"
+  const prefs = getPrefs(name);
+  if (prefs.speechBubbles === false) return;
+  const id = envelope.id || `${envelope.ts}:${text}`;
+  if (seenSpeakIds.has(id)) return;                   // a reconnect can redeliver
+  seenSpeakIds.add(id);
+  if (seenSpeakIds.size > 500) seenSpeakIds.delete(seenSpeakIds.values().next().value);
+
+  let side;
+  const order = spaces.getSpaceOrderForWindow(win);
+  if (order) {
+    if (order.index === order.currentIndex) return;   // on screen: the face shows it
+    side = order.index < order.currentIndex ? 'left' : 'right';
+  } else {
+    // No order (API gone, non-macOS): still bubble when known to be
+    // off-Space, or when nothing is known at all — never when known on-Space.
+    const space = spaces.getSpaceForWindow(win);
+    const current = space != null ? spaces.getCurrentSpaceForWindow(win) : null;
+    if (space != null && current != null && space === current) return;
+    side = 'right';
+  }
+  const display = screen.getDisplayMatching(collapsedBounds.get(win) || win.getBounds());
+  bubbles.show({ agentName: name, text, color: prefs.color, opacity: prefs.opacity, side, display });
+}
+
+/** Bring an agent's widget to the user: macOS switches to its Space when
+ * its window is focused. (The exact effect the grown banner must never
+ * cause by accident — see the Space-memory comments in createWidgetWindow —
+ * done here on purpose, on a click.) */
+function focusWidget(name) {
+  const win = windows.get(name);
+  if (!win || win.isDestroyed()) {
+    openWidget(name);
+    return;
+  }
+  win.show();
+  app.focus({ steal: true });
+  win.focus();
+  log.info('bubble', `${name}: focused (Space switch)`);
+}
+
+function onBubbleAction(kind, name, payload) {
+  payload = payload || {};
+  if (kind === 'open') {
+    focusWidget(name);
+  } else if (kind === 'voice') {
+    focusWidget(name);
+    const win = windows.get(name);
+    if (win && !win.isDestroyed()) win.webContents.send('mic:request');
+  } else if (kind === 'reply') {
+    const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+    if (!text) return;
+    sendHumanMessage(name, name, text).then((r) => {
+      if (!r || !r.ok) log.error('bubble', `${name}: reply not delivered: ${r && r.error}`);
+    });
+  }
+}
+
+ipcMain.on('bubble:action', (event, kind, payload) => {
+  if (bubbles) bubbles.handle(event, kind, payload);
 });
 
 // ── face buttons: this agent's voice + locale (for mic STT + TTS pickVoice) ─
@@ -1816,6 +1916,7 @@ async function connectVortexia(name, win) {
     // only forward speak requests actually addressed to this agent.
     if (envelope && envelope.kind === 'speak' && envelope.to !== name) return;
     win.webContents.send('vortexia:message', envelope, topic);
+    maybeBubble(name, win, envelope);
   });
 
   // The underlying MQTT client never retries on its own (see client.js's
@@ -1926,6 +2027,7 @@ app.whenReady().then(async () => {
   });
 
   createTray({ registryUrl: REGISTRY_URL, onSelectAgent: openWidget, onReload: () => reloadWidgets(), onQuit: () => app.quit() });
+  bubbles = createBubbles({ sources: WIDGET_SOURCES, log, onAction: onBubbleAction });
 
   // System sleep/wake: the occlusion-expand/mosaic feature (see
   // the tile reconciler below) drives off document.visibilitychange,

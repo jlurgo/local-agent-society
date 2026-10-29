@@ -281,6 +281,9 @@ screen; the widget's own name/log stay visible above it:
   regardless, so the widget stays readable even very transparent.
 - **Always on top**
 - **Mute**
+- **Speech bubbles** (on by default) — what this agent says out loud also
+  pops up as a bubble at the screen edge when its widget is on another
+  Space; see **Speech bubbles** below.
 - **Expand when hidden** (on by default) — while occluded/off-Space, the
   widget balloons to a big, click-through, full-screen name banner instead
   of just disappearing; shrinks back once its Space is on screen again (see
@@ -306,6 +309,30 @@ fits on one line, and if it still doesn't fit, breaks at whichever generic
 title boundary (a space, a hyphen, or a lowercase→Uppercase transition)
 falls closest to the middle — same rule in both the compact face and the
 expanded/mosaic banner, just with a much bigger target size in the latter.
+
+## Speech bubbles
+
+When an agent speaks (the short spoken summary of its results, `las speak`)
+and its widget is on a Space other than the one you are looking at, a
+bubble in the agent's color slides in at the edge of the screen on the side
+that Space lies — left if the agent's Space is to the left of the current
+one in Mission Control order, right otherwise. Bubbles stack from the top,
+never take focus when they appear, and go away on their own after 20 s
+unless the pointer is over one or a text answer is open.
+
+- **Click the text** → macOS switches to that agent's Space (its widget is
+  focused).
+- **🎤 Voice** → same, and the widget starts a dictation as if its mic
+  button had been clicked (the mic button stops it).
+- **⌨ Text** → an input in the bubble; Enter sends. The answer takes the
+  exact path of a dictation (from the agent, to the agent, source human),
+  so the agent's `sessions.target` decides which session gets it.
+- **✕** or Esc → dismiss.
+
+No bubble when the agent is on the current Space (its face already shows
+the text), and none at all for an agent whose **Speech bubbles** setting is
+off. Direction comes from a private macOS call (`lib/spaces.js`); if it is
+ever unavailable, bubbles still appear, on the right.
 
 ## Editing the widget
 

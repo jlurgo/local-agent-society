@@ -33,6 +33,7 @@ const opacityEl = document.getElementById('opacity');
 const alwaysOnTopEl = document.getElementById('alwaysOnTop');
 const muteEl = document.getElementById('mute');
 const expandWhenHiddenEl = document.getElementById('expandWhenHidden');
+const speechBubblesEl = document.getElementById('speechBubbles');
 const wakeEnabledEl = document.getElementById('wakeEnabled');
 const micLanguageEl = document.getElementById('micLanguage');
 const micTargetEl = document.getElementById('micTarget');
@@ -181,7 +182,7 @@ function updateNameCenterOffset(size, text) {
 // locale — per explicit request: dictation should assume Spanish unless the
 // user picks otherwise, since it's what most agents on this machine are
 // dictated to in regardless of what language their own TTS voice speaks.
-let prefs = { color: '#90c060', opacity: 0.72, alwaysOnTop: true, mute: false, expandWhenHidden: true, micLanguage: 'es' };
+let prefs = { color: '#90c060', opacity: 0.72, alwaysOnTop: true, mute: false, expandWhenHidden: true, speechBubbles: true, micLanguage: 'es' };
 let locale = 'en-US';
 // Optional Kokoro voice id pinned in this agent's .las-agent.json (`tts_voice`,
 // e.g. "em_alex"). When set and known to the pool it beats the name hash in
@@ -281,6 +282,7 @@ function applyPrefsToDom() {
   alwaysOnTopEl.checked = !!prefs.alwaysOnTop;
   muteEl.checked = !!prefs.mute;
   expandWhenHiddenEl.checked = !!prefs.expandWhenHidden;
+  speechBubblesEl.checked = prefs.speechBubbles !== false;
   micLanguageEl.value = prefs.micLanguage || 'es';
   syncMicTargetSelect();
   updateSpeakerIcon();
@@ -446,6 +448,7 @@ expandWhenHiddenEl.addEventListener('change', () => {
   persist({ expandWhenHidden: expandWhenHiddenEl.checked });
   reportVisibility();
 });
+speechBubblesEl.addEventListener('change', () => persist({ speechBubbles: speechBubblesEl.checked }));
 micLanguageEl.addEventListener('change', () => persist({ micLanguage: micLanguageEl.value }));
 micTargetEl.addEventListener('change', () => setSessionsConfig({ target: micTargetEl.value }));
 ccDefaultEl.addEventListener('change', () => setSessionsConfig({ cc_default: ccDefaultEl.checked }));
@@ -1421,6 +1424,12 @@ micEl.addEventListener('click', (e) => {
   }, 220);
 });
 
+// A speech bubble's "answer by voice" (main.js onBubbleAction): main has
+// just focused this widget (switching to its Space); start listening as if
+// the mic button had been clicked. Never interrupts a recording in flight.
+window.las.onMicRequest(() => {
+  if (micState === 'idle') startRecording();
+});
 micEl.addEventListener('dblclick', () => {
   if (micClickTimer) {
     clearTimeout(micClickTimer);

@@ -1,0 +1,178 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>bubble</title>
+  <style>
+    :root {
+      --bubble-color: #90c060;
+      --bubble-ink: #1b1b1b;
+      --bubble-opacity: 0.92;
+      --reveal: 220ms;
+    }
+    html, body {
+      margin: 0;
+      background: transparent;
+      font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+      font-size: 14px;
+      color: var(--bubble-ink);
+      user-select: none;
+      overflow: hidden;
+    }
+    /* The card slides in from the screen edge it hugs; the little tail on
+       that same edge points at where the agent's Space lies. */
+    .card {
+      position: relative;
+      margin: 6px 12px;
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--bubble-color) calc(var(--bubble-opacity) * 100%), transparent);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+      animation: slide-in var(--reveal) ease-out;
+      -webkit-app-region: no-drag;
+    }
+    body.left .card { animation-name: slide-in-left; }
+    .card::before {
+      content: "";
+      position: absolute;
+      top: 18px;
+      width: 0;
+      height: 0;
+      border: 8px solid transparent;
+    }
+    body.right .card::before { right: -14px; border-left-color: var(--bubble-color); }
+    body.left .card::before { left: -14px; border-right-color: var(--bubble-color); }
+    @keyframes slide-in { from { transform: translateX(120%); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes slide-in-left { from { transform: translateX(-120%); opacity: 0; } to { transform: none; opacity: 1; } }
+
+    .head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px 0 12px;
+    }
+    .name { font-weight: 700; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dismiss {
+      border: 0; background: transparent; color: inherit; opacity: 0.6; cursor: pointer;
+      font-size: 15px; line-height: 1; padding: 4px 6px; border-radius: 8px;
+    }
+    .dismiss:hover { opacity: 1; background: rgba(0, 0, 0, 0.12); }
+    .body {
+      padding: 6px 12px 8px;
+      line-height: 1.35;
+      max-height: 170px;
+      overflow: auto;
+      cursor: pointer;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .body:hover { background: rgba(255, 255, 255, 0.18); border-radius: 8px; }
+    .actions { display: flex; gap: 6px; padding: 0 10px 10px; }
+    .actions button {
+      flex: 1;
+      border: 1px solid rgba(0, 0, 0, 0.22);
+      background: rgba(255, 255, 255, 0.35);
+      color: inherit;
+      border-radius: 9px;
+      padding: 5px 8px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .actions button:hover { background: rgba(255, 255, 255, 0.6); }
+    .reply { display: none; gap: 6px; padding: 0 10px 10px; }
+    body.replying .reply { display: flex; }
+    body.replying .actions { display: none; }
+    .reply input {
+      flex: 1;
+      min-width: 0;
+      font: inherit;
+      padding: 6px 8px;
+      border-radius: 9px;
+      border: 1px solid rgba(0, 0, 0, 0.22);
+      background: rgba(255, 255, 255, 0.85);
+      color: #111;
+      user-select: text;
+    }
+    .reply button {
+      border: 1px solid rgba(0, 0, 0, 0.22); background: rgba(255, 255, 255, 0.35); color: inherit;
+      border-radius: 9px; padding: 5px 10px; font: inherit; cursor: pointer;
+    }
+    body.dark { --bubble-ink: #f4f4f4; }
+    body.dark .reply input { background: rgba(0, 0, 0, 0.35); color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="head">
+      <span class="name" id="name"></span>
+      <button class="dismiss" id="dismiss" title="Dismiss (Esc)">✕</button>
+    </div>
+    <div class="body" id="text" title="Go to this agent"></div>
+    <div class="actions">
+      <button id="voice" title="Go to the agent and start a dictation">🎤 Voice</button>
+      <button id="textBtn" title="Type an answer here">⌨ Text</button>
+    </div>
+    <div class="reply">
+      <input id="input" type="text" placeholder="Answer…" autocomplete="off" spellcheck="false" />
+      <button id="send">Send</button>
+    </div>
+  </div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const agent = params.get('agent') || '';
+    const text = params.get('text') || '';
+    const color = params.get('color') || '#90c060';
+    const opacity = Math.max(0.85, Math.min(1, Number(params.get('opacity')) || 0.92));
+    const side = params.get('side') === 'left' ? 'left' : 'right';
+
+    document.body.classList.add(side);
+    document.documentElement.style.setProperty('--bubble-color', color);
+    document.documentElement.style.setProperty('--bubble-opacity', String(opacity));
+    // Dark ink on light colors, light ink on dark ones.
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color);
+    if (m) {
+      const [r, g, b] = [m[1], m[2], m[3]].map((h) => parseInt(h, 16) / 255);
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (lum < 0.45) document.body.classList.add('dark');
+    }
+    document.getElementById('name').textContent = agent;
+    document.getElementById('text').textContent = text;
+    document.title = agent;
+
+    const act = (kind, payload) => window.bubble.action(kind, payload);
+    const card = document.getElementById('card');
+    const input = document.getElementById('input');
+
+    // Main sizes the window to the card: report every change (fonts, the
+    // reply row opening, long text wrapping).
+    const report = () => act('size', { height: card.offsetHeight + 12 });
+    new ResizeObserver(report).observe(card);
+    report();
+
+    // The pointer over the bubble, or a reply being typed, holds it open.
+    let replying = false;
+    card.addEventListener('mouseenter', () => act('pin', { on: true }));
+    card.addEventListener('mouseleave', () => act('pin', { on: replying }));
+
+    document.getElementById('dismiss').addEventListener('click', (e) => { e.stopPropagation(); act('dismiss'); });
+    document.getElementById('text').addEventListener('click', () => act('open'));
+    document.getElementById('voice').addEventListener('click', () => act('voice'));
+    document.getElementById('textBtn').addEventListener('click', () => {
+      replying = true;
+      document.body.classList.add('replying');
+      act('pin', { on: true });
+      input.focus();
+    });
+    const send = () => {
+      const value = input.value.trim();
+      if (!value) return;
+      act('reply', { text: value });
+    };
+    document.getElementById('send').addEventListener('click', send);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') send();
+      if (e.key === 'Escape') act('dismiss');
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') act('dismiss'); });
+  </script>
+</body>
+</html>

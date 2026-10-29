@@ -402,8 +402,10 @@ test('preload/main.js no longer expose the old speak-selftest-ok IPC channel (re
 
 test('main.js vortexia:send handler resolves the sending agent from the window map (reuses the existing per-window VortexiaClient)', () => {
   const src = readSrc('main.js');
-  const body = extractFunctionBody(src, "ipcMain.handle('vortexia:send', async (event, toName, text) => {");
-  assert.match(body, /nameForWindow\(win\)/);
+  const handler = extractFunctionBody(src, "ipcMain.handle('vortexia:send', async (event, toName, text) => {");
+  assert.match(handler, /nameForWindow\(win\)/);
+  assert.match(handler, /return sendHumanMessage\(fromName, toName, text\)/, 'the handler only resolves the sender; the send itself is shared with the speech bubbles');
+  const body = extractFunctionBody(src, 'async function sendHumanMessage(fromName, toName, text) {');
   assert.match(body, /vortexiaClients\.get\(fromName\)/);
 });
 
@@ -986,6 +988,72 @@ test('widget.log path: resolved from the checkout, never a hardcoded home direct
   assert.ok(src.includes("path.join(dir, 'start.sh')") && src.includes("path.join(dir, 'backend', 'main.py')"), 'markers are the repo\'s own files');
 });
 
+// ── speech bubbles (bubbles.js) ────────────────────────────────────────────
+
+test('every local module main.js requires is on electron-builder\'s files whitelist (a missing one crashes the packaged app at startup)', () => {
+  const files = JSON.parse(readSrc('package.json')).build.files;
+  const src = stripComments(readSrc('main.js'));
+  for (const m of src.matchAll(/require\('\.\/([^']+)'\)/g)) {
+    const rel = m[1].endsWith('.js') ? m[1] : `${m[1]}.js`;
+    const listed = files.some((f) => f === rel || (f.endsWith('/**/*') && rel.startsWith(f.slice(0, -4))));
+    assert.ok(listed, `${rel} is required by main.js but not in package.json build.files`);
+  }
+  for (const rel of ['bubble-preload.js', 'renderer/bubble.html']) {
+    assert.ok(files.some((f) => f === rel || (f.endsWith('/**/*') && rel.startsWith(f.slice(0, -4)))), `${rel} must be packaged`);
+  }
+});
+
+test('bubbles: stackPositions hugs the given screen edge and stacks from the top with a gap', () => {
+  const src = readSrc('bubbles.js');
+  const body = extractFunctionBody(src, 'function stackPositions(workArea, heights, side, width = BUBBLE_WIDTH) {');
+  const fn = new Function('BUBBLE_WIDTH', 'BUBBLE_MARGIN', 'BUBBLE_TOP', `function stackPositions(workArea, heights, side, width = BUBBLE_WIDTH) ${body} return stackPositions;`)(340, 10, 12);
+  const area = { x: 100, y: 25, width: 1000, height: 800 };
+  const right = fn(area, [80, 120], 'right');
+  assert.deepEqual(right[0], { x: 100 + 1000 - 340 - 10, y: 37, width: 340, height: 80 });
+  assert.equal(right[1].y, 37 + 80 + 10, 'the second bubble sits under the first plus the gap');
+  const left = fn(area, [80], 'left');
+  assert.equal(left[0].x, 110, 'left side: a margin in from the left edge');
+});
+
+test('bubbles: a speak envelope bubbles only when the agent is off the Space being looked at, on the side its Space lies', () => {
+  const src = readSrc('main.js');
+  const hook = extractFunctionBody(src, "client.on('message', (envelope, topic) => {");
+  assert.match(hook, /maybeBubble\(name, win, envelope\)/, 'every forwarded envelope is offered to the bubbles');
+  const body = extractFunctionBody(src, 'function maybeBubble(name, win, envelope) {');
+  assert.match(body, /envelope\.kind !== 'speak'\) return/, 'only what the agent says out loud');
+  assert.match(body, /prefs\.speechBubbles === false\) return/, 'per-agent opt-out');
+  assert.match(body, /spaces\.getSpaceOrderForWindow\(win\)/);
+  assert.match(body, /order\.index === order\.currentIndex\) return/, 'on the current Space the face shows it: no bubble');
+  assert.match(body, /order\.index < order\.currentIndex \? 'left' : 'right'/);
+  assert.match(body, /seenSpeakIds/, 'a redelivered envelope never bubbles twice');
+});
+
+test('bubbles: the actions go to the agent — focus (Space switch), focus + mic, or the same human-message send as a dictation', () => {
+  const src = readSrc('main.js');
+  const body = extractFunctionBody(src, 'function onBubbleAction(kind, name, payload) {');
+  assert.match(body, /kind === 'open'[\s\S]*focusWidget\(name\)/);
+  assert.match(body, /kind === 'voice'[\s\S]*send\('mic:request'\)/);
+  assert.match(body, /kind === 'reply'[\s\S]*sendHumanMessage\(name, name, text\)/, 'a typed reply is exactly a dictation: from the agent, to the agent, source human');
+  const focus = extractFunctionBody(src, 'function focusWidget(name) {');
+  assert.match(focus, /win\.focus\(\)/);
+  const preload = readSrc('preload.js');
+  assert.match(preload, /onMicRequest/);
+  const renderer = readSrc('renderer', 'widget.js');
+  assert.match(renderer, /onMicRequest\(\(\) => \{\s*if \(micState === 'idle'\) startRecording\(\);/, 'a voice answer never interrupts a recording in flight');
+  assert.ok(fs.existsSync(path.join(ROOT, 'renderer', 'bubble.html')) && fs.existsSync(path.join(ROOT, 'bubble-preload.js')));
+  const bubbles = readSrc('bubbles.js');
+  assert.match(bubbles, /showInactive\(\)/, 'a bubble never steals focus when it appears');
+  assert.match(bubbles, /setVisibleOnAllWorkspaces\(true/, 'it must show on the Space being looked at');
+});
+
+test('spaces.js exports the Space order reader, bound to CGSCopyManagedDisplaySpaces', () => {
+  const src = readSrc('lib', 'spaces.js');
+  assert.match(src, /CGSCopyManagedDisplaySpaces/);
+  assert.match(src, /module\.exports = \{[^}]*getSpaceOrderForWindow/);
+  const body = extractFunctionBody(src, 'function getSpaceOrderForWindow(win) {');
+  assert.match(body, /releaseAll\(displays, \.\.\.keys\)/, 'the copied array and the created keys are released');
+});
+
 // ── reopen (`las widget`) forgets saved position, keeps color/prefs ────────
 // The saved-bounds restore is meant for a plain relaunch (`las start`); the
 // explicit reopen command exists to grab a widget that is stuck or hard to
@@ -1041,7 +1109,8 @@ test('the face and preload load from the checkout when there is one, else from t
   assert.match(src, /loadFile\(path\.join\(WIDGET_SOURCES\.rendererDir, 'index\.html'\)/);
   const body = extractFunctionBody(src, 'function resolveWidgetSources() {');
   assert.match(body, /findCheckoutRoot\(\)/);
-  assert.match(body, /path\.join\(__dirname, 'renderer'\)/, 'the packaged copy stays the fallback');
+  assert.match(body, /path\.join\(__dirname, \.\.\.rel\)/, 'the packaged copy stays the fallback, file by file');
+  assert.match(body, /bubblePreloadPath/, 'the speech bubble face and preload resolve the same way');
 });
 
 test('closeWidget destroys the existing window and does NOT recreate one', () => {
@@ -1452,7 +1521,7 @@ test('a dictation and the self-test are sent with NO target — the backend appl
 });
 
 test('vortexia:send goes through the backend /agents/send (source human, no session choice of its own) and falls back to a direct agent-inbox publish only when the backend is unreachable', () => {
-  const body = extractFunctionBody(readSrc('main.js'), "ipcMain.handle('vortexia:send', async (event, toName, text) => {");
+  const body = extractFunctionBody(readSrc('main.js'), 'async function sendHumanMessage(fromName, toName, text) {');
   assert.match(body, /\/agents\/send/);
   assert.match(body, /source: 'human'/);
   assert.doesNotMatch(body, /all_sessions|session: target/, 'the window never picks a session — that is the agent\'s sessions.target, read by the backend');
