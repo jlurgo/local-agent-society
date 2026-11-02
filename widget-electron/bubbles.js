@@ -36,6 +36,8 @@ const BUBBLE_MARGIN = 10;     // from the screen edge, and between stacked bubbl
 const BUBBLE_BOTTOM = 12;     // above the Dock / bottom of the work area
 const BUBBLE_TTL_MS = 20000;
 const BUBBLE_LINGER_MS = 3000;   // after the voice ends — and after the pointer leaves a bubble whose voice ended
+/** How long a silenced bubble stays readable: enough to read its words. */
+const readingTime = (chars) => Math.min(20000, Math.max(3000, 1500 + 55 * chars));
 const BUBBLE_MAX_PER_STACK = 5;
 
 /**
@@ -175,7 +177,7 @@ function createBubbles({ sources, log, onAction }) {
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-    const b = { win, agentName, side, stack: stackKey, anchor, speakId, displayId, height: BUBBLE_MIN_HEIGHT, timer: null, pinned: false, voice: false, closing: false, ended: false };
+    const b = { win, agentName, side, stack: stackKey, anchor, speakId, displayId, height: BUBBLE_MIN_HEIGHT, timer: null, pinned: false, voice: false, closing: false, ended: false, chars: String(text || '').length };
     bubbles.push(b);
     win.loadFile(path.join(sources.bubbleDir, 'bubble.html'), {
       query: { agent: agentName, text, color, opacity: String(opacity), side },
@@ -210,10 +212,16 @@ function createBubbles({ sources, log, onAction }) {
         armTimer(b);
         return;
       case 'dismiss':
-      case 'mute':
-        // Closing a bubble silences what it shows; 🔇 is the same, said plainly.
+        // Closing a bubble silences what it shows.
         onAction('mute', b.agentName, payload);
         close(b);
+        return;
+      case 'mute':
+        // 🔇 silences the voice but leaves the words: the bubble stays long
+        // enough to read them (by length), or 3 s after the pointer leaves it.
+        onAction('mute', b.agentName, payload);
+        b.ended = true;
+        if (!b.pinned && !b.voice) closeSoon(b, readingTime(b.chars));
         return;
       case 'voice':
         b.voice = true;          // from now on this bubble shows the dictation
