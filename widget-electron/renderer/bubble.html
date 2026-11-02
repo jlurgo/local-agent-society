@@ -90,6 +90,10 @@
       word-break: break-word;
     }
     .body:hover { background: rgba(255, 255, 255, 0.18); border-radius: 8px; }
+    /* The whole card is the way to the agent's desktop: it reads as a link. */
+    .card { cursor: pointer; }
+    .card:hover { filter: brightness(1.04); }
+    .reply input { cursor: text; }
     .reply { display: none; gap: 6px; padding: 0 10px 10px; }
     body.replying .reply { display: flex; }
     .reply input {
@@ -195,7 +199,8 @@
 
     document.getElementById('dismiss').addEventListener('click', (e) => { e.stopPropagation(); act('dismiss'); });   // also silences (bubbles.js)
     document.getElementById('mute').addEventListener('click', (e) => { e.stopPropagation(); act('mute'); });
-    document.getElementById('text').addEventListener('click', () => act('open'));
+    // Anywhere on the card goes to the agent's desktop — except its controls, which stop the click.
+    card.addEventListener('click', (e) => { if (e.target.closest('button, input, .reply, .mic')) return; act('open'); });
     // Voice: the agent's widget records and transcribes from its own Space;
     // this bubble is the face of that dictation (bubble:mic from main).
     const micLabel = document.getElementById('micLabel');

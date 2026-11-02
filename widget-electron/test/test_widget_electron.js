@@ -1056,7 +1056,10 @@ test('bubbles: shown by the speak ack — at playing, or at skipped (muted); dro
 
 test('bubbles: 🔇 and closing silence the agent; a bubble goes when the agent stops talking unless it is in use; on-Space bubbles sit beside the widget', () => {
   const bubblesSrc = readSrc('bubbles.js');
-  assert.match(bubblesSrc, /case 'dismiss':\s*case 'mute':[\s\S]*?onAction\('mute', b\.agentName/, 'closing a bubble silences what it shows');
+  assert.match(bubblesSrc, /case 'dismiss':[\s\S]*?onAction\('mute', b\.agentName[\s\S]*?close\(b\)/, 'closing a bubble silences what it shows');
+  assert.match(bubblesSrc, /case 'mute':[\s\S]*?onAction\('mute', b\.agentName[\s\S]*?closeSoon\(b, readingTime\(b\.chars\)\)/, '🔇 silences but leaves the words, for a reading time by length');
+  assert.doesNotMatch(bubblesSrc.slice(bubblesSrc.indexOf("case 'mute':"), bubblesSrc.indexOf("case 'mute':") + 400), /\n\s*close\(b\);/, '🔇 does not close the bubble');
+  assert.match(readSrc('renderer', 'bubble.html'), /card\.addEventListener\('click'/, 'the whole card goes to the agent');
   const main = readSrc('main.js');
   assert.match(extractFunctionBody(main, 'function onBubbleAction(kind, name, payload) {'), /kind === 'mute'[\s\S]*send\('speech:stop'\)/);
   assert.match(readSrc('renderer', 'widget.js'), /onSpeechStop\(\(\) => stopCurrentSpeech\(\)\)/);
